@@ -32,3 +32,15 @@ You can refer the man page for seq_class for more details by running
 ```bash
 seq_class -h
 ```
+## Reproducing article results
+In order to reproduce the results in the associated article, you must install InSilicoSeq
+```bash
+pip install InSilicoSeq
+```
+
+After installation, the following command can produce a single simulation
+```bash
+iss generate -g sample-references.fasta --mode basic --output basic_reads
+```
+
+In order to reproduce the study, you must produce 20 replicates of the above simulation, and average the classwise read assignment...
