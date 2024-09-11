@@ -132,9 +132,6 @@ fn process_fastq_file(tree:&KGST<char, String>, fastq_file: &Path, percent_misma
 }
 
 fn main() {
-    // remove later
-    std::env::set_var("RUST_BACKTRACE", "1");
-
     let matches = Command::new("Maximum Likelihood Metagenomic Classification")
         .version("1.0")
         .author("Sriram Vijendran <vijendran.sriram@gmail.com>")
