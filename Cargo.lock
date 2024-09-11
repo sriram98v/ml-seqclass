@@ -608,6 +608,7 @@ checksum = "49f1f14873335454500d59611f1cf4a4b0f786f9ac11f4312a78e4cf2566695b"
 [[package]]
 name = "kgst"
 version = "0.1.1"
+source = "git+https://github.com/sriram98v/generalized_suffix_tree#36f3f1c8e8b25eb90ac036797c3de953add36ac3"
 dependencies = [
  "bio",
  "clap",

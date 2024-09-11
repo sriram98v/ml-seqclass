@@ -166,18 +166,18 @@ fn main() {
         .about("Maximum Likelihood Metagenomic classifier using Suffix trees")
         .get_matches();
     
-        let ref_path = Path::new(matches.get_one::<String>("source").expect("required").as_str());
-        let read_path = Path::new(matches.get_one::<String>("reads").expect("required").as_str());
-        let out_path = matches.get_one::<String>("out");
-        let tree_depth = matches.get_one::<usize>("max").expect("required");
-        let num_seqs: Option<&usize> = matches.get_one::<usize>("num");
-        let percent_mismatch = matches.get_one::<f32>("percent_mismatch").expect("required");
-        let num_threads: Option<&usize> = matches.get_one::<usize>("threads");
-        match num_threads{
-            Some(threads) => rayon::ThreadPoolBuilder::new().num_threads(*threads).build_global().unwrap(),
-            None => rayon::ThreadPoolBuilder::new().num_threads(2).build_global().unwrap(),
-        };
-        let tree: KGST<char, String> = build_tree(ref_path, tree_depth, num_seqs);
-        let alignments = process_fastq_file(&tree, read_path, percent_mismatch);
-        let _ = write_matches(out_path, &alignments);
+    let ref_path = Path::new(matches.get_one::<String>("source").expect("required").as_str());
+    let read_path = Path::new(matches.get_one::<String>("reads").expect("required").as_str());
+    let out_path = matches.get_one::<String>("out");
+    let tree_depth = matches.get_one::<usize>("max").expect("required");
+    let num_seqs: Option<&usize> = matches.get_one::<usize>("num");
+    let percent_mismatch = matches.get_one::<f32>("percent_mismatch").expect("required");
+    let num_threads: Option<&usize> = matches.get_one::<usize>("threads");
+    match num_threads{
+        Some(threads) => rayon::ThreadPoolBuilder::new().num_threads(*threads).build_global().unwrap(),
+        None => rayon::ThreadPoolBuilder::new().num_threads(2).build_global().unwrap(),
+    };
+    let tree: KGST<char, String> = build_tree(ref_path, tree_depth, num_seqs);
+    let alignments = process_fastq_file(&tree, read_path, percent_mismatch);
+    let _ = write_matches(out_path, &alignments);
 }
