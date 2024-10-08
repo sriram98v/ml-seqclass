@@ -1,1 +1,7 @@
 /target
+/.venv
+*.txt
+*.fastq
+*.fasta
+*.treefile
+*.sh

@@ -17,6 +17,7 @@ fn build_tree(file: &Path, max_depth: &usize, num_seq: Option<&usize>)->KGST<cha
     let reader = fasta::Reader::from_file(file).unwrap();
 
     let total_size = reader.records().count();
+    
 
     let pb = ProgressBar::new(total_size as u64).with_style(ProgressStyle::with_template("{spinner:.green} [{elapsed_precise}] [{wide_bar:.cyan/blue}] {bytes}/{total_bytes} ({eta})").unwrap_or(ProgressStyle::default_bar()));
     
@@ -54,7 +55,7 @@ fn query_tree(tree: &KGST<char, String>, q_seq: &Vec<char>, num_mismatches: &usi
     let chunk_size: usize = string_len/(num_mismatches+1);
     let refs: HashMap<String, Vec<char>> = tree.get_strings()
                                                             .values()
-                                                            .map(|x| (x.0.get_id().clone(), x.0.get_string().clone()))
+                                                            .map(|x| (x.0.get_id().clone(), x.0.get_string().iter().map(|a| a.into_inner().cloned().unwrap()).collect_vec()))
                                                             .collect::<HashMap<String, Vec<char>>>();
     if string_len>=chunk_size{
         for depth in 0..string_len+1-chunk_size{
@@ -103,29 +104,34 @@ fn process_fastq_file(tree:&KGST<char, String>, fastq_file: &Path, percent_misma
     let fastq_records = reader.records().map(|x| x.unwrap()).collect_vec();
 
     return fastq_records.par_iter().progress_with_style(pb).map(|read_data| {
-        let read_id: String = read_data.id().to_string();
-        let read_qual: Vec<u8> = read_data.qual().iter().map(|x| x-33).collect();
-        let num_mismatches: usize = (read_data.seq().len() as f32 * (percent_mismatch/100_f32)).floor() as usize;
+            let read_id: String = read_data.id().to_string();
+            let read_qual: Vec<u8> = read_data.qual().iter().map(|x| x-33).collect();
+            let num_mismatches: usize = (read_data.seq().len() as f32 * (percent_mismatch/100_f32)).floor() as usize;
 
-        let seq: Vec<char> = read_data.seq()
-            .to_vec()
-            .iter()
-            .map(|x| *x as char)
-            .collect();
+            let seq: Vec<char> = read_data.seq()
+                .to_vec()
+                .iter()
+                .map(|x| *x as char)
+                .collect();
+                
+            // (ref_id, vec<(start_positions, log_prob)>)
+            let hits: Vec<(String, Vec<(usize, f64)>)> = query_tree(tree, &seq, &num_mismatches, &read_qual);
+
+            return (read_id, hits);
+        })
+        .map(|(read_id, read_matches)| {
+            if read_matches.len()>0{let best_match = read_matches.iter().map(|(ref_id, positions)| (ref_id.clone(), positions.iter().max_by(|x, y| x.1.total_cmp(&y.1)).cloned().unwrap()))
+                        .map(|x| (x.0, x.1.0, x.1.1))
+                        .max_by(|x, y| x.2.total_cmp(&y.2))
+                        .unwrap();
+                return (read_id, best_match);
+            }
+            else{
+                return (read_id, ("".to_string(), 0, 0_f64));
+            }
             
-        // (ref_id, vec<(start_positions, log_prob)>)
-        let hits: Vec<(String, Vec<(usize, f64)>)> = query_tree(tree, &seq, &num_mismatches, &read_qual);
-
-        return (read_id, hits);
-    })
-    .map(|(read_id, read_matches)| {
-        let best_match = read_matches.iter().map(|(ref_id, positions)| (ref_id.clone(), positions.iter().max_by(|x, y| x.1.total_cmp(&y.1)).cloned().unwrap()))
-                .map(|x| (x.0, x.1.0, x.1.1))
-                .max_by(|x, y| x.2.total_cmp(&y.2))
-                .unwrap();
-        return (read_id, best_match);
-    })
-    .collect::<HashMap<String, (String, usize, f64)>>();
+        })
+        .collect::<HashMap<String, (String, usize, f64)>>();
     
     // all_hits
     
