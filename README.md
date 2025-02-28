@@ -24,7 +24,7 @@ cargo install --path=./
 ## Usage
 In order to start classifying a set of reads, you need to build an index from you set of reference sequences. You can build an index using the following command.
 ```bash
-seq_class -s <reference sequence file path> -m <Maximum depth of index(use 5 if not sure)> -o <index file path> -n <number of reference sequences (0 for all)> -t <num threads> -r <path to fastq file>
+seq_class -s <reference sequence file path> -r <path to fastq file> -p <percent mismatch> -o <output file> -t <num threads (optional)>
 ```
 
 
