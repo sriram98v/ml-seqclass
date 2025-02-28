@@ -12,7 +12,7 @@ use indicatif::{ProgressBar, ProgressStyle, ParallelProgressIterator};
 use rayon::prelude::*;
 use std::path::Path;
 
-fn build_tree(file: &Path, max_depth: &usize, num_seq: Option<&usize>)->KGST<char, String>{
+fn build_tree(file: &Path, max_depth: &usize)->KGST<char, String>{
     // println!("Reference Sequence index: {}", file.display());
     let reader = fasta::Reader::from_file(file).unwrap();
 
@@ -24,8 +24,6 @@ fn build_tree(file: &Path, max_depth: &usize, num_seq: Option<&usize>)->KGST<cha
     let mut tree: KGST<char, String> = KGST::new('$');
 
     let reader = fasta::Reader::from_file(file).unwrap();
-
-    let mut count = 0;
     
     for result in reader.records() {
 
@@ -40,23 +38,19 @@ fn build_tree(file: &Path, max_depth: &usize, num_seq: Option<&usize>)->KGST<cha
         tree.insert(result_data.id().to_string(), seq, &max_depth);
 
         pb.inc(1);   
-        count+=1;
-        if &count == num_seq.unwrap_or(&0) {
-            break;
-        }
     }
     tree
 }
 
 /// Returns alignments of one read with log probability of match.
-fn query_tree(tree: &KGST<char, String>, q_seq: &Vec<char>, num_mismatches: &usize, qual_seq: &Vec<u8>)->Vec<(String, Vec<(usize, f64)>)>{
+fn query_tree(tree: &KGST<char, String>, q_seq: &[char], num_mismatches: &usize, qual_seq: &[u8])->Vec<(String, Vec<(usize, f64)>)>{
     let mut match_set: Vec<(String, Vec<(usize, f64)>)> = Vec::new();
     let string_len: usize = q_seq.len();
     let chunk_size: usize = string_len/(num_mismatches+1);
     let refs: HashMap<String, Vec<char>> = tree.get_strings()
-                                                            .values()
-                                                            .map(|x| (x.0.get_id().clone(), x.0.get_string().iter().map(|a| a.into_inner().cloned().unwrap()).collect_vec()))
-                                                            .collect::<HashMap<String, Vec<char>>>();
+                                            .values()
+                                            .map(|x| (x.0.get_id().clone(), x.0.get_string().iter().map(|a| a.into_inner().cloned().unwrap()).collect_vec()))
+                                            .collect::<HashMap<String, Vec<char>>>();
     if string_len>=chunk_size{
         for depth in 0..string_len+1-chunk_size{
             let mut temp_matches: Vec<(String, Vec<(usize, f64)>)> = Vec::new();
@@ -81,7 +75,7 @@ fn query_tree(tree: &KGST<char, String>, q_seq: &Vec<char>, num_mismatches: &usi
                                                                     };
                                                             })
                                                             .map(|x| {
-                                                                (x-depth, match_log_prob(q_seq, qual_seq, &refs.get(&partial_match_label).unwrap()[x-depth..x+q_seq.len()-depth].iter().map(|x| x.clone()).collect_vec()))
+                                                                (x-depth, match_log_prob(q_seq, qual_seq, &refs.get(&partial_match_label).unwrap()[x-depth..x+q_seq.len()-depth]))
                                                             })
                                                             .collect::<Vec<(usize, f64)>>()));
             }
@@ -116,18 +110,21 @@ fn process_fastq_file(tree:&KGST<char, String>, fastq_file: &Path, percent_misma
                 
             // (ref_id, vec<(start_positions, log_prob)>)
             let hits: Vec<(String, Vec<(usize, f64)>)> = query_tree(tree, &seq, &num_mismatches, &read_qual);
+            
+            // dbg!(hits.len());
 
             return (read_id, hits);
         })
         .map(|(read_id, read_matches)| {
-            if read_matches.len()>0{let best_match = read_matches.iter().map(|(ref_id, positions)| (ref_id.clone(), positions.iter().max_by(|x, y| x.1.total_cmp(&y.1)).cloned().unwrap()))
+            if read_matches.len()>0{
+                let best_match = read_matches.iter().map(|(ref_id, positions)| (ref_id.clone(), positions.iter().max_by(|x, y| x.1.total_cmp(&y.1)).cloned().unwrap()))
                         .map(|x| (x.0, x.1.0, x.1.1))
                         .max_by(|x, y| x.2.total_cmp(&y.2))
                         .unwrap();
                 return (read_id, best_match);
             }
             else{
-                return (read_id, ("".to_string(), 0, 0_f64));
+                return (read_id, ("?".to_string(), 0, 0_f64));
             }
             
         })
@@ -145,13 +142,6 @@ fn main() {
             .required(true)
             .value_parser(clap::value_parser!(String))
             )
-        .arg(arg!(-n --num <NUM_SEQ> "Number of seq. (defaults to all)")
-            .value_parser(clap::value_parser!(usize))
-            )
-        .arg(arg!(-m --max <MAX_DEPTH> "Max depth of the tree")
-            .required(true)
-            .value_parser(clap::value_parser!(usize))
-            )
         .arg(arg!(-p --percent_mismatch <PERCENT_MISMATCH>"Percent mismatch to reference sequences")
             .required(true)
             .value_parser(clap::value_parser!(f32))
@@ -159,28 +149,34 @@ fn main() {
         .arg(arg!(-r --reads <READS>"Source file with read sequences(fasta)")
             .required(true)
             .value_parser(clap::value_parser!(String))
-        )
+            )
         .arg(arg!(-o --out <OUT_FILE>"Output file")
             .value_parser(clap::value_parser!(String))
-        )
+            )
         .arg(arg!(-t --threads <THREADS>"Number of threads (defaults to 2)")
             .value_parser(clap::value_parser!(usize))
-        )
+            )
         .about("Maximum Likelihood Metagenomic classifier using Suffix trees")
         .get_matches();
     
     let ref_path = Path::new(matches.get_one::<String>("source").expect("required").as_str());
     let read_path = Path::new(matches.get_one::<String>("reads").expect("required").as_str());
     let out_path = matches.get_one::<String>("out");
-    let tree_depth = matches.get_one::<usize>("max").expect("required");
-    let num_seqs: Option<&usize> = matches.get_one::<usize>("num");
     let percent_mismatch = matches.get_one::<f32>("percent_mismatch").expect("required");
     let num_threads: Option<&usize> = matches.get_one::<usize>("threads");
     match num_threads{
         Some(threads) => rayon::ThreadPoolBuilder::new().num_threads(*threads).build_global().unwrap(),
         None => rayon::ThreadPoolBuilder::new().num_threads(2).build_global().unwrap(),
     };
-    let tree: KGST<char, String> = build_tree(ref_path, tree_depth, num_seqs);
+
+    let fastq_reader = fastq::Reader::from_file(read_path).unwrap();
+
+    let max_read_len = fastq_reader.records().par_bridge().map(|x| x.unwrap().seq().len()).max().unwrap();
+    let num_mismatches = (max_read_len as f32 * (percent_mismatch/100_f32)).floor() as usize;
+    let tree_depth = (max_read_len/(num_mismatches+1))+2;
+
+
+    let tree: KGST<char, String> = build_tree(ref_path, &tree_depth);
     let alignments = process_fastq_file(&tree, read_path, percent_mismatch);
     let _ = write_matches(out_path, &alignments);
 }
