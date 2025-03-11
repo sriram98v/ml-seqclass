@@ -15,7 +15,7 @@ pub fn match_log_prob(q_seq: &[char], quality_score_vec: &[u8], aligned_ref_seq:
     return match_log_likelihood
 }
 
-pub fn write_matches(outpath: Option<&String>, matches: &HashMap<String, (String, usize, f64)>)->std::io::Result<()>
+pub fn write_matches(outpath: Option<&String>, matches: &HashMap<String, Vec<(String, usize, f64)>>)->std::io::Result<()>
 {
     match outpath{
         Some(path) => {
@@ -26,21 +26,29 @@ pub fn write_matches(outpath: Option<&String>, matches: &HashMap<String, (String
             let result_header:String = "Read_ID\tRef_ID\thit position\tLog-Likelihood\n".to_string();
             file_ref.write_all(result_header.as_bytes()).expect("write failed");
             matches.into_iter()
-                .filter(|(_seq_id, (read_id, _hit_pos, _match_score))| {
-                    read_id.is_empty()
+                .filter(|(_seq_id, all_matches)| {
+                    all_matches[0].0.is_empty()
                 })
-                .for_each(|(seq_id, (read_id, hit_pos, match_score))| {
-                let out_string:String = format!("{}\t{}\t{}\t{}\n", seq_id, read_id, hit_pos, match_score);
-                file_ref.write_all(out_string.as_bytes()).expect("write failed");
+                .for_each(|(seq_id, all_matches)| {
+                    all_matches.iter()
+                        .for_each(|(read_id, hit_pos, match_score)| {
+                            let out_string:String = format!("{}\t{}\t{}\t{}\n", seq_id, read_id, hit_pos, match_score);
+                            file_ref.write_all(out_string.as_bytes()).expect("write failed");
+                        });
+                    
             });
         },
         None => {
             let result_header:String = "Read_ID\tRef_ID\tposition\tLog-Likelihood\n".to_string();
             print!("{}", result_header);
-            matches.into_iter().for_each(|(seq_id, (read_id, hit_pos, match_score))| {
-                let out_string:String = format!("{}\t{}\t{}\t{}\n", seq_id, read_id, hit_pos, match_score);
-                print!("{}", out_string);
-            });
+            matches.into_iter()
+                .for_each(|(seq_id, all_matches)| {
+                    all_matches.iter()
+                        .for_each(|(read_id, hit_pos, match_score)| {
+                            let out_string:String = format!("{}\t{}\t{}\t{}\n", seq_id, read_id, hit_pos, match_score);
+                            println!("{}", out_string);
+                        });
+        });
         }
     }
     Ok(())

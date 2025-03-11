@@ -4,7 +4,7 @@ pub mod utils;
 use clap::{arg, Command};
 use itertools::Itertools;
 use utils::*;
-use std::collections::HashMap;
+use std::{collections::HashMap, fs::File, io::Write, sync::Mutex};
 use bio::io::{fasta,  fastq};
 use generalized_suffix_tree::suffix_tree::KGST;
 use generalized_suffix_tree::data::tree_item::TreeItem;
@@ -88,7 +88,7 @@ fn query_tree(tree: &KGST<char, String>, q_seq: &[char], num_mismatches: &usize,
 }
 
 /// Returns alignments of all reads with corresponding log probability
-fn process_fastq_file(tree:&KGST<char, String>, fastq_file: &Path, percent_mismatch: &f32)-> HashMap<String, (String, usize, f64)>
+fn process_fastq_file(tree:&KGST<char, String>, fastq_file: &Path, percent_mismatch: &f32, outpath: Option<&Mutex<File>>)
 {
 
     let pb = ProgressStyle::with_template("{spinner:.green} [{elapsed_precise}] [{wide_bar:.cyan/blue}] {bytes}/{total_bytes} ({eta})").unwrap();
@@ -111,24 +111,25 @@ fn process_fastq_file(tree:&KGST<char, String>, fastq_file: &Path, percent_misma
             // (ref_id, vec<(start_positions, log_prob)>)
             let hits: Vec<(String, Vec<(usize, f64)>)> = query_tree(tree, &seq, &num_mismatches, &read_qual);
             
-            // dbg!(hits.len());
-
             return (read_id, hits);
         })
-        .map(|(read_id, read_matches)| {
+        .for_each(|(read_id, read_matches)| {
             if read_matches.len()>0{
-                let best_match = read_matches.iter().map(|(ref_id, positions)| (ref_id.clone(), positions.iter().max_by(|x, y| x.1.total_cmp(&y.1)).cloned().unwrap()))
-                        .map(|x| (x.0, x.1.0, x.1.1))
-                        .max_by(|x, y| x.2.total_cmp(&y.2))
-                        .unwrap();
-                return (read_id, best_match);
-            }
-            else{
-                return (read_id, ("?".to_string(), 0, 0_f64));
+                read_matches.iter().map(|(ref_id, positions)| (ref_id.clone(), positions.iter().max_by(|x, y| x.1.total_cmp(&y.1)).cloned().unwrap()))
+                        .for_each(|x| {
+                            // let ref_pos_likelihood = (x.0, x.1.0, x.1.1);
+                            let outstr = format!("{}\t{}\t{}\t{}\n", read_id, x.0, x.1.0, x.1.1);
+                            match outpath{
+                                Some(file) => {file.lock().unwrap().write_all(outstr.as_bytes());},
+                                None => {print!("{}", outstr)},
+                            };
+                        });
+                        // .collect_vec();
+                        // .max_by(|x, y| x.2.total_cmp(&y.2))
+                        // .unwrap();
             }
             
         })
-        .collect::<HashMap<String, (String, usize, f64)>>();
     
     // all_hits
     
@@ -169,6 +170,10 @@ fn main() {
         None => rayon::ThreadPoolBuilder::new().num_threads(2).build_global().unwrap(),
     };
 
+    let outfile = match out_path{
+        Some(file_path) => Some(Mutex::new(File::create(file_path).unwrap())),
+        _ => None,
+    };
     let fastq_reader = fastq::Reader::from_file(read_path).unwrap();
 
     let max_read_len = fastq_reader.records().par_bridge().map(|x| x.unwrap().seq().len()).max().unwrap();
@@ -177,6 +182,6 @@ fn main() {
 
 
     let tree: KGST<char, String> = build_tree(ref_path, &tree_depth);
-    let alignments = process_fastq_file(&tree, read_path, percent_mismatch);
-    let _ = write_matches(out_path, &alignments);
+    process_fastq_file(&tree, read_path, percent_mismatch, outfile.as_ref());
+    // let _ = write_matches(out_path, &alignments);
 }
