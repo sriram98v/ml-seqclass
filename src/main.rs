@@ -3,6 +3,8 @@ extern crate shrust;
 pub mod utils;
 use clap::{arg, Command};
 use itertools::Itertools;
+use ndarray::{Array1, Array2, Axis};
+use ndarray_npy::write_npy;
 use utils::*;
 use std::{collections::HashMap, fs::File, io::Write, sync::Mutex};
 use bio::io::{fasta,  fastq};
@@ -88,7 +90,7 @@ fn query_tree(tree: &KGST<char, String>, q_seq: &[char], num_mismatches: &usize,
 }
 
 /// Returns alignments of all reads with corresponding log probability
-fn process_fastq_file(tree:&KGST<char, String>, fastq_file: &Path, percent_mismatch: &f32, outpath: Option<&Mutex<File>>)
+fn process_fastq_file(tree:&KGST<char, String>, fastq_file: &Path, percent_mismatch: &f32, outpath: Option<&Mutex<File>>, ref_ids: &HashMap<String, usize>, read_ids: &HashMap<String, usize>, ll_array: &mut Mutex<Array2<f64>>)
 {
 
     let pb = ProgressStyle::with_template("{spinner:.green} [{elapsed_precise}] [{wide_bar:.cyan/blue}] {bytes}/{total_bytes} ({eta})").unwrap();
@@ -119,10 +121,15 @@ fn process_fastq_file(tree:&KGST<char, String>, fastq_file: &Path, percent_misma
                         .for_each(|x| {
                             // let ref_pos_likelihood = (x.0, x.1.0, x.1.1);
                             let outstr = format!("{}\t{}\t{}\t{}\n", read_id, x.0, x.1.0, x.1.1);
-                            match outpath{
-                                Some(file) => {file.lock().unwrap().write_all(outstr.as_bytes());},
-                                None => {print!("{}", outstr)},
-                            };
+                            let read_idx = read_ids.get(&read_id).unwrap();
+                            let ref_idx = ref_ids.get(&x.0).unwrap();
+
+                            ll_array.lock().unwrap()[[read_idx.clone(), ref_idx.clone()]] = x.1.1;
+
+                            // match outpath{
+                            //     Some(file) => {file.lock().unwrap().write_all(outstr.as_bytes());},
+                            //     None => {print!("{}", outstr)},
+                            // };
                         });
                         // .collect_vec();
                         // .max_by(|x, y| x.2.total_cmp(&y.2))
@@ -180,8 +187,32 @@ fn main() {
     let num_mismatches = (max_read_len as f32 * (percent_mismatch/100_f32)).floor() as usize;
     let tree_depth = (max_read_len/(num_mismatches+1))+2;
 
+    let fastq_reader = fastq::Reader::from_file(read_path).unwrap();
+    let mut read_ids: HashMap<String, usize> = HashMap::new();
+    for result in fastq_reader.records().enumerate() {
+        let record_id = result.1.expect("Error during fastq record parsing").id().to_string();
+        read_ids.insert(record_id, result.0);
+    }
 
+    let ref_reader = fasta::Reader::from_file(ref_path).unwrap();
+    let mut ref_ids: HashMap<String, usize> = HashMap::new();
+    for result in ref_reader.records().enumerate() {
+        let record_id = result.1.expect("Error during fasta record parsing").id().to_string();
+        ref_ids.insert(record_id, result.0);
+    }
+
+    // likelihood arrays indexed by (read_id,ref_id)
+    let mut ll_array = Mutex::new(Array2::<f64>::zeros((read_ids.len(), ref_ids.len())));
+    
+    let read_idxs = serde_json::to_string(&read_ids).unwrap();
+    let ref_idxs = serde_json::to_string(&ref_ids).unwrap();
+
+    File::create("read_idxs.json").unwrap().write_all(read_idxs.as_bytes());
+    File::create("ref_idxs.json").unwrap().write_all(ref_idxs.as_bytes());
     let tree: KGST<char, String> = build_tree(ref_path, &tree_depth);
-    process_fastq_file(&tree, read_path, percent_mismatch, outfile.as_ref());
+    process_fastq_file(&tree, read_path, percent_mismatch, outfile.as_ref(), &ref_ids, &read_ids, &mut ll_array);
+    dbg!(&ll_array);
+    // let array = &ll_array.into_inner().unwrap();
+    write_npy("ll_array.npy", &ll_array.into_inner().unwrap());
     // let _ = write_matches(out_path, &alignments);
 }
