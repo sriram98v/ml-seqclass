@@ -1,7 +1,9 @@
 /target
 /.venv
-*.txt
 *.fastq
 *.fasta
 *.treefile
-*.sh
+*.ipynb
+*.npy
+*.tar
+*.zip
