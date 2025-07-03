@@ -211,7 +211,7 @@ fn main() {
     File::create("ref_idxs.json").unwrap().write_all(ref_idxs.as_bytes());
     let tree: KGST<char, String> = build_tree(ref_path, &tree_depth);
     process_fastq_file(&tree, read_path, percent_mismatch, outfile.as_ref(), &ref_ids, &read_ids, &mut ll_array);
-    dbg!(&ll_array);
+    // dbg!(&ll_array);
     // let array = &ll_array.into_inner().unwrap();
     write_npy("ll_array.npy", &ll_array.into_inner().unwrap());
     // let _ = write_matches(out_path, &alignments);
