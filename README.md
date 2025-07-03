@@ -26,21 +26,23 @@ In order to start classifying a set of reads, you need to build an index from yo
 ```bash
 seq_class -s <reference sequence file path> -r <path to fastq file> -p <percent mismatch> -o <output file> -t <num threads (optional)>
 ```
+This will produce two JSON files and one ```.npy``` file.
 
+Then to find maximum likelihood matches of each read to a reference, use the python script provided
+```bash
+usage: get-proportions.py [-h] [-o OUTPUT_DIR] [-n NUM_ITER]
+
+EM proportion estimations
+
+options:
+  -h, --help            show this help message and exit
+  -o, --output_dir OUTPUT_DIR
+                        Output directory
+  -n, --num_iter NUM_ITER
+                        Output directory
+```
 
 You can refer the man page for seq_class for more details by running
 ```bash
 seq_class -h
 ```
-## Reproducing article results
-In order to reproduce the results in the associated article, you must install InSilicoSeq
-```bash
-pip install InSilicoSeq
-```
-
-After installation, the following command can produce a single simulation
-```bash
-iss generate -g sample-references.fasta --mode basic --output basic_reads
-```
-
-In order to reproduce the study, you must produce 20 replicates of the above simulation, and average the classwise read assignment...
