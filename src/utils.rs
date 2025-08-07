@@ -1,7 +1,12 @@
+use anyhow::Result;
+use format_num::NumberFormat;
 use itertools::izip;
+use libsufr::suffix_array::SuffixArray;
+use libsufr::types::SuffixSortType;
 use std::path::Path;
 use std::{io::Write, fs};
 use std::collections::HashMap;
+use tabled::Table;
 
 /// Compute probability of match given ref is true source
 pub fn compute_match_log_prob(q_seq: &str, quality_score_vec: &[u8], aligned_ref_seq: &str) -> f64{
@@ -84,6 +89,77 @@ pub fn complement(q_seq: Vec<char>)->Vec<char>{
             }
         })
         .collect()
+}
+
+pub fn summarize_index(sufr_file: &str) -> Result<()> {
+    let suffix_array = SuffixArray::read(sufr_file, false)?;
+    let meta = suffix_array.metadata()?;
+    let num_fmt = NumberFormat::new();
+    let mut rows = vec![vec!["Filename".to_string(), meta.filename.clone()]];
+    rows.push(vec![
+        "Modified".to_string(),
+        meta.modified.format("%Y-%m-%d %H:%M").to_string(),
+    ]);
+    rows.push(vec![
+        "File Size".to_string(),
+        format!("{} bytes", num_fmt.format(",.0", meta.file_size as f64)),
+    ]);
+    rows.push(vec![
+        "File Version".to_string(),
+        meta.file_version.to_string(),
+    ]);
+    rows.push(vec!["DNA".to_string(), meta.is_dna.to_string()]);
+    rows.push(vec![
+        "Allow Ambiguity".to_string(),
+        meta.allow_ambiguity.to_string(),
+    ]);
+    rows.push(vec![
+        "Ignore Softmask".to_string(),
+        meta.ignore_softmask.to_string(),
+    ]);
+    rows.push(vec![
+        "Text Length".to_string(),
+        num_fmt.format(",.0", meta.text_len as f64),
+    ]);
+    rows.push(vec![
+        "Len Suffixes".to_string(),
+        num_fmt.format(",.0", meta.len_suffixes as f64),
+    ]);
+
+    match meta.sort_type {
+        SuffixSortType::Mask(seed_mask) => {
+            rows.push(vec!["Seed mask".to_string(), seed_mask.mask])
+        }
+        SuffixSortType::MaxQueryLen(max_query_len) => rows.push(vec![
+            "Max query len".to_string(),
+            num_fmt.format(",.0", max_query_len as f64),
+        ]),
+    };
+
+    rows.push(vec![
+        "Num sequences".to_string(),
+        num_fmt.format(",.0", meta.num_sequences as f64),
+    ]);
+    let seq_starts = meta
+        .sequence_starts
+        .into_iter()
+        .map(|v| v.to_string())
+        .collect::<Vec<_>>()
+        .join(", ");
+    rows.push(vec![
+        "Sequence starts".to_string(),
+        textwrap::wrap(&seq_starts, 40).join("\n"),
+    ]);
+    let seq_names = meta.sequence_names.join(", ");
+    rows.push(vec![
+        "Sequence names".to_string(),
+        textwrap::wrap(&seq_names, 40).join("\n"),
+    ]);
+
+    let table = Table::from_iter(rows);
+    println!("{table}");
+
+    Ok(())
 }
 
 // fn build_sa(ref_file: &Path, outfile: &String)->Result<()>{

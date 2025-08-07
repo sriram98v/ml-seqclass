@@ -6,7 +6,7 @@ use itertools::Itertools;
 use ndarray::Array2;
 use ndarray_npy::write_npy;
 use utils::*;
-use std::{collections::HashMap, fs::File, io::Write, sync::Mutex};
+use std::{collections::HashMap, fs::{File, exists}, io::Write, sync::Mutex};
 use bio::io::{fasta,  fastq};
 use indicatif::{ProgressStyle, ProgressIterator};
 use rayon::prelude::*;
@@ -49,12 +49,9 @@ fn query_read(suffarr: &mut SuffixArray, refs: &HashMap<String, String>, record:
 
     let matches = match_read_kmers(suffarr, record, percent_mismatch)?;
 
-    // for hit in matches{
-    // let match_set: Vec<(String, Vec<(usize, f64)>)> = 
     matches.par_iter().for_each(|hit| {
         let kmer_start_read = hit.query_num;
         
-        // let mut tmp_matches: HashMap<String, Vec<(usize, f64)>> = vec![];
         for ref_entry in hit.sequences.iter(){
             let seq_name = &ref_entry.sequence_name;
             let seq_start = ref_entry.sequence_start;
@@ -109,7 +106,6 @@ fn process_fastq_file(suffarr: &mut SuffixArray,
             hits.iter()
                 .map(|(ref_id, positions)| (ref_id.clone(), positions.iter().max_by(|x, y| x.1.total_cmp(&y.1)).cloned().unwrap()))
                 .for_each(|x| {
-                    // let ref_pos_likelihood = (x.0, x.1.0, x.1.1);
                     let outstr = format!("{}\t{}\t{}\t{}\n", read_id, x.0, x.1.0, x.1.1);
                     let read_idx = read_ids.get(&read_id).unwrap();
                     let ref_idx = ref_ids.get(&x.0).unwrap();
@@ -137,14 +133,22 @@ fn main() -> Result<()>{
                     .required(true)
                 )
                 .arg(arg!(-o --out <OUTFILE> "Output index file name")
-                    .default_value("out.sufr")
+                    .default_value("")
                     .value_parser(clap::value_parser!(String))
                 )
 
         )
         .subcommand(
+            Command::new("inspect")
+               .about("Inspect a pre-built index")
+               .arg(arg!(-i --index <INDEX_FILE> "Source index file of reference sequences(.sufr)")
+                    .required(true)
+                    .value_parser(clap::value_parser!(String))
+                )
+        )
+        .subcommand(
             Command::new("query")
-                .arg(arg!(-s --source <SRC_FILE> "Source index file with reference sequences(.sufr)")
+                .arg(arg!(-s --source <SRC_FILE> "Source file with reference sequences(.fasta)")
                     .required(true)
                     .value_parser(clap::value_parser!(String))
                     )
@@ -172,28 +176,59 @@ fn main() -> Result<()>{
         Some(("build",  sub_m)) => {
             let src_file = sub_m.get_one::<String>("source").expect("required").as_str();
             let outfile = sub_m.get_one::<String>("out").unwrap().as_str();
+            
+            match outfile{
+                "" => {
+                    let sequence_delimiter = b'$';
+                    let seq_data = read_sequence_file(Path::new(src_file), sequence_delimiter)?;
 
-            let sequence_delimiter = b'$';
-            let seq_data = read_sequence_file(Path::new(src_file), sequence_delimiter)?;
+                    let builder_args = SufrBuilderArgs {
+                        text: seq_data.seq,
+                        path: Some(format!("{}.sufr", src_file)),
+                        low_memory: false,
+                        max_query_len: None,
+                        is_dna: true,
+                        allow_ambiguity: false,
+                        ignore_softmask: true,
+                        sequence_starts: seq_data.start_positions.into_iter().collect(),
+                        sequence_names: seq_data.sequence_names,
+                        num_partitions: 16,
+                        seed_mask: None,
+                        random_seed: 42,
+                    };
 
-            let builder_args = SufrBuilderArgs {
-                text: seq_data.seq,
-                path: Some(outfile.to_string()),
-                low_memory: false,
-                max_query_len: None,
-                is_dna: true,
-                allow_ambiguity: false,
-                ignore_softmask: true,
-                sequence_starts: seq_data.start_positions.into_iter().collect(),
-                sequence_names: seq_data.sequence_names,
-                num_partitions: 16,
-                seed_mask: None,
-                random_seed: 42,
+                    let _ = SuffixArray::new(builder_args)?;
+
+                },
+                _ => {
+                    let sequence_delimiter = b'$';
+                    let seq_data = read_sequence_file(Path::new(src_file), sequence_delimiter)?;
+
+                    let builder_args = SufrBuilderArgs {
+                        text: seq_data.seq,
+                        path: Some(outfile.to_string()),
+                        low_memory: false,
+                        max_query_len: None,
+                        is_dna: true,
+                        allow_ambiguity: false,
+                        ignore_softmask: true,
+                        sequence_starts: seq_data.start_positions.into_iter().collect(),
+                        sequence_names: seq_data.sequence_names,
+                        num_partitions: 16,
+                        seed_mask: None,
+                        random_seed: 42,
+                    };
+
+                    let _ = SuffixArray::new(builder_args)?;
+                }
             };
 
-            let _ = SuffixArray::new(builder_args)?;
-
         },
+        Some(("inspect",  sub_m)) => {
+            let src_file = sub_m.get_one::<String>("index").expect("required").as_str();
+            summarize_index(src_file)?;
+
+        }
         Some(("query",  sub_m)) => {
             let ref_file = sub_m.get_one::<String>("source").expect("required").as_str();
             let reads_file = sub_m.get_one::<String>("reads").expect("required").as_str();
@@ -238,25 +273,30 @@ fn main() -> Result<()>{
             File::create("read_idxs.json").unwrap().write_all(read_idxs.as_bytes())?;
             File::create("ref_idxs.json").unwrap().write_all(ref_idxs.as_bytes())?;
 
-            let sequence_delimiter = b'$';
-            let seq_data = read_sequence_file(Path::new(ref_file), sequence_delimiter)?;
+            let mut suffarr = match exists(format!("{}.sufr", ref_file))?{
+                true => {SuffixArray::read(format!("{}.sufr", ref_file).as_str(), false)?},
+                _ => {
+                    let sequence_delimiter = b'$';
+                    let seq_data = read_sequence_file(Path::new(ref_file), sequence_delimiter)?;
 
-            let builder_args = SufrBuilderArgs {
-                text: seq_data.seq,
-                path: Some(format!("{}.sufr", ref_file)),
-                low_memory: false,
-                max_query_len: None,
-                is_dna: true,
-                allow_ambiguity: false,
-                ignore_softmask: true,
-                sequence_starts: seq_data.start_positions.into_iter().collect(),
-                sequence_names: seq_data.sequence_names,
-                num_partitions: 16,
-                seed_mask: None,
-                random_seed: 42,
+                    let builder_args = SufrBuilderArgs {
+                        text: seq_data.seq,
+                        path: Some(format!("{}.sufr", ref_file)),
+                        low_memory: false,
+                        max_query_len: None,
+                        is_dna: true,
+                        allow_ambiguity: false,
+                        ignore_softmask: true,
+                        sequence_starts: seq_data.start_positions.into_iter().collect(),
+                        sequence_names: seq_data.sequence_names,
+                        num_partitions: 16,
+                        seed_mask: None,
+                        random_seed: 42,
+                    };
+
+                    SuffixArray::new(builder_args)?
+                }
             };
-
-            let mut suffarr = SuffixArray::new(builder_args)?;
 
             process_fastq_file(&mut suffarr, &refs, Path::new(reads_file), percent_mismatch, outpath.as_ref(), &ref_ids, &read_ids, &mut ll_array)?;
 
