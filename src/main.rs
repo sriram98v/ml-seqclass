@@ -38,7 +38,7 @@ fn match_read_kmers(suffarr: &mut SuffixArray, record: &fastq::Record, percent_m
 }
 
 /// Returns a vec with each element being (reference_name, (alignment_start_pos, likelihood of alignment))
-fn query_read(suffarr: &mut SuffixArray, refs: &HashMap<String, String>, record: &fastq::Record, percent_mismatch: &f32)->Result<Vec<(String, Vec<(usize, f64)>)>>{
+fn query_read(suffarr: &mut SuffixArray, refs: &HashMap<usize, String>, record: &fastq::Record, percent_mismatch: &f32)->Result<Vec<(String, Vec<(usize, f64)>)>>{
 
     let read_len = record.seq().len();
     let read_seq = std::str::from_utf8(record.seq())?;
@@ -63,7 +63,7 @@ fn query_read(suffarr: &mut SuffixArray, refs: &HashMap<String, String>, record:
             if kmer_start_ref>=kmer_start_read && kmer_start_ref+read_len<=ref_len+kmer_start_read{
                 // retrieve the full reference
                 let align_start = kmer_start_ref-kmer_start_read;
-                let seq = refs.get(seq_name).unwrap();
+                let seq = refs.get(&seq_start).unwrap();
                 let ref_match_seg = &seq[align_start..align_start+read_len];
                 if num_mismatches(read_seq, ref_match_seg)<=max_num_mismatches{
                     let match_log_prob = compute_match_log_prob(read_seq, read_qual, ref_match_seg);
@@ -80,7 +80,7 @@ fn query_read(suffarr: &mut SuffixArray, refs: &HashMap<String, String>, record:
 }
 
 fn process_fastq_file(suffarr: &mut SuffixArray, 
-                    refs: &HashMap<String, String>, 
+                    refs: &HashMap<usize, String>, 
                     fastq_file: &Path, 
                     percent_mismatch: &f32, 
                     outpath: Option<&Mutex<File>>, 
@@ -102,9 +102,10 @@ fn process_fastq_file(suffarr: &mut SuffixArray,
             let hits = query_read(suffarr, refs, record, percent_mismatch).unwrap();
             (record.id().to_string(), hits)
         })
+        // .par_bridge()
         .for_each(|(read_id, hits)| {
             hits.iter()
-                .map(|(ref_id, positions)| (ref_id.clone(), positions.iter().max_by(|x, y| x.1.total_cmp(&y.1)).cloned().unwrap()))
+                .map(|(ref_id, positions)| (ref_id.clone(), positions.par_iter().max_by(|x, y| x.1.total_cmp(&y.1)).cloned().unwrap()))
                 .for_each(|x| {
                     let outstr = format!("{}\t{}\t{}\t{}\n", read_id, x.0, x.1.0, x.1.1);
                     let read_idx = read_ids.get(&read_id).unwrap();
@@ -278,7 +279,7 @@ fn main() -> Result<()>{
 
             let mut suffarr: SuffixArray = SuffixArray::read(ref_file, false)?;
 
-            let refs = get_refs_from_sa(&mut suffarr)?;
+            let refs = get_ref_starts_from_sa(&mut suffarr)?;
 
             let mut ref_ids: HashMap<String, usize> = HashMap::new();
             for (idx, result) in refs.keys().enumerate() {

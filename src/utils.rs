@@ -106,6 +106,21 @@ pub fn get_refs_from_sa(suffarr: &mut SuffixArray)->Result<HashMap<String, Strin
     Ok(refs)
 }
 
+pub fn get_ref_starts_from_sa(suffarr: &mut SuffixArray)->Result<HashMap<usize, String>>{
+    let seq_starts = suffarr.metadata()?.sequence_starts;
+    let seq_names = suffarr.metadata()?.sequence_names;
+    let text_len = suffarr.metadata()?.text_len;
+    let mut last_stop = text_len;
+    let refs = seq_names.iter().rev().zip(seq_starts.iter().rev())
+        .map(|(_, start)| {
+            let seq = suffarr.string_at(*start, Some(last_stop-start-1)).unwrap();
+            last_stop = *start;
+            (*start, seq)
+        }).collect::<HashMap<usize, String>>();
+    
+    Ok(refs)
+}
+
 pub fn summarize_index(sufr_file: &str) -> Result<()> {
     let suffix_array = SuffixArray::read(sufr_file, false)?;
     let meta = suffix_array.metadata()?;
