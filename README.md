@@ -22,11 +22,23 @@ cargo install --path=./
 ```
 
 ## Usage
+This tool aligns reads to references by first building a suffix array, then aligning the reads to the references by finding seed matches and extending them. After finding all alignments, an EM algorithm is employed to identify the most-likely true source for each read, and to estimate population proportions of the detected references.
+
+### Building an Index
 In order to start classifying a set of reads, you need to build an index from you set of reference sequences. You can build an index using the following command.
 ```bash
-seq_class -s <reference sequence file path> -r <path to fastq file> -p <percent mismatch> -o <output file> -t <num threads (optional)>
+seq_class build -s <reference sequence file path>
 ```
-This will produce two JSON files and one ```.npy``` file.
+This will create an index file with the extension ```.sufr```.
+
+### Classifying reads
+You can now begin classifying read using the following command.
+```bash
+seq_class query -s <reference sequence file path> -p <Percent mismatch> -r <Reads> -t <Threads [Default: 2]> -o <Output file [Default: out.matches]>
+```
+
+
+This will produce a plain-text file containing all alignments detected, along with two JSON files and one ```.npy``` file which are used in the following EM step.
 
 Then to find maximum likelihood matches of each read to a reference, use the python script provided
 ```bash
