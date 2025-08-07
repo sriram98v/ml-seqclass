@@ -38,14 +38,14 @@ fn match_read_kmers(suffarr: &mut SuffixArray, record: &fastq::Record, percent_m
 }
 
 /// Returns a vec with each element being (reference_name, (alignment_start_pos, likelihood of alignment))
-fn query_read(suffarr: &mut SuffixArray, refs: &HashMap<usize, String>, record: &fastq::Record, percent_mismatch: &f32)->Result<Vec<(String, Vec<(usize, f64)>)>>{
+fn query_read(suffarr: &mut SuffixArray, refs: &HashMap<usize, String>, record: &fastq::Record, percent_mismatch: &f32)->Result<Vec<(String, (usize, f64))>>{
 
     let read_len = record.seq().len();
     let read_seq = std::str::from_utf8(record.seq())?;
     let read_qual = record.qual();
     let max_num_mismatches: usize = (read_len as f32 * (percent_mismatch/100_f32)).floor() as usize;
 
-    let match_set: Mutex<HashMap<String, Vec<(usize, f64)>>> = Mutex::new(HashMap::new());
+    let match_set: Mutex<HashMap<String, (usize, f64)>> = Mutex::new(HashMap::new());
 
     let matches = match_read_kmers(suffarr, record, percent_mismatch)?;
 
@@ -67,10 +67,15 @@ fn query_read(suffarr: &mut SuffixArray, refs: &HashMap<usize, String>, record: 
                 let ref_match_seg = &seq[align_start..align_start+read_len];
                 if num_mismatches(read_seq, ref_match_seg)<=max_num_mismatches{
                     let match_log_prob = compute_match_log_prob(read_seq, read_qual, ref_match_seg);
-                    // tmp_matches.push((seq_name.to_string(), (align_start, match_log_prob)));
+
                     match_set.lock().unwrap().entry(seq_name.to_string())
-                        .and_modify(|e| e.push((align_start, match_log_prob)))
-                        .or_insert(vec![(align_start, match_log_prob)]);
+                        .and_modify(|e| {
+                            // e.push((align_start, match_log_prob))
+                            if e.1<=match_log_prob{
+                                *e = (align_start, match_log_prob);
+                            }
+                        })
+                        .or_insert((align_start, match_log_prob));
                 }
             }
         }
@@ -105,7 +110,7 @@ fn process_fastq_file(suffarr: &mut SuffixArray,
         // .par_bridge()
         .for_each(|(read_id, hits)| {
             hits.iter()
-                .map(|(ref_id, positions)| (ref_id.clone(), positions.par_iter().max_by(|x, y| x.1.total_cmp(&y.1)).cloned().unwrap()))
+                // .map(|(ref_id, positions)| (ref_id.clone(), positions))
                 .for_each(|x| {
                     let outstr = format!("{}\t{}\t{}\t{}\n", read_id, x.0, x.1.0, x.1.1);
                     let read_idx = read_ids.get(&read_id).unwrap();
