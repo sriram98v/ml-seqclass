@@ -91,6 +91,21 @@ pub fn complement(q_seq: Vec<char>)->Vec<char>{
         .collect()
 }
 
+pub fn get_refs_from_sa(suffarr: &mut SuffixArray)->Result<HashMap<String, String>>{
+    let seq_starts = suffarr.metadata()?.sequence_starts;
+    let seq_names = suffarr.metadata()?.sequence_names;
+    let text_len = suffarr.metadata()?.text_len;
+    let mut last_stop = text_len;
+    let refs = seq_names.iter().rev().zip(seq_starts.iter().rev())
+        .map(|(label, start)| {
+            let seq = suffarr.string_at(*start, Some(last_stop-start-1)).unwrap();
+            last_stop = *start;
+            (label.to_string(), seq)
+        }).collect::<HashMap<String, String>>();
+    
+    Ok(refs)
+}
+
 pub fn summarize_index(sufr_file: &str) -> Result<()> {
     let suffix_array = SuffixArray::read(sufr_file, false)?;
     let meta = suffix_array.metadata()?;

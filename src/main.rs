@@ -6,8 +6,8 @@ use itertools::Itertools;
 use ndarray::Array2;
 use ndarray_npy::write_npy;
 use utils::*;
-use std::{collections::HashMap, fs::{File, exists}, io::Write, sync::Mutex};
-use bio::io::{fasta,  fastq};
+use std::{collections::HashMap, fs::File, io::Write, sync::Mutex};
+use bio::io::fastq;
 use indicatif::{ProgressStyle, ProgressIterator};
 use rayon::prelude::*;
 use std::path::Path;
@@ -139,6 +139,14 @@ fn main() -> Result<()>{
 
         )
         .subcommand(
+            Command::new("fasta")
+               .about("Generate Fasta file containing sequences present in index")
+               .arg(arg!(-i --index <INDEX_FILE> "Source index file of reference sequences(.sufr)")
+                    .required(true)
+                    .value_parser(clap::value_parser!(String))
+                )
+        )
+        .subcommand(
             Command::new("inspect")
                .about("Inspect a pre-built index")
                .arg(arg!(-i --index <INDEX_FILE> "Source index file of reference sequences(.sufr)")
@@ -148,7 +156,7 @@ fn main() -> Result<()>{
         )
         .subcommand(
             Command::new("query")
-                .arg(arg!(-s --source <SRC_FILE> "Source file with reference sequences(.fasta)")
+                .arg(arg!(-s --source <SRC_FILE> "Source index file with reference sequences(.sufr)")
                     .required(true)
                     .value_parser(clap::value_parser!(String))
                     )
@@ -228,7 +236,21 @@ fn main() -> Result<()>{
             let src_file = sub_m.get_one::<String>("index").expect("required").as_str();
             summarize_index(src_file)?;
 
-        }
+        },
+        Some(("fasta",  sub_m)) => {
+            let src_file = sub_m.get_one::<String>("index").expect("required").as_str();
+            let mut suffarr = SuffixArray::read(src_file, false)?;
+
+            let ref_string = get_refs_from_sa(&mut suffarr)?.into_iter()
+                .map(|(id, seq)| format!("\n>{}\n{}\n", id, seq))
+                .collect::<String>();
+
+            let mut outfile = File::create(format!("{}.fasta", src_file))?;
+            outfile.write_all(ref_string.as_bytes())?;
+
+            // Ok(())
+
+        },
         Some(("query",  sub_m)) => {
             let ref_file = sub_m.get_one::<String>("source").expect("required").as_str();
             let reads_file = sub_m.get_one::<String>("reads").expect("required").as_str();
@@ -254,15 +276,13 @@ fn main() -> Result<()>{
                 read_ids.insert(record_id, result.0);
             }
 
-            let ref_reader = fasta::Reader::from_file(Path::new(ref_file)).unwrap();
+            let mut suffarr: SuffixArray = SuffixArray::read(ref_file, false)?;
+
+            let refs = get_refs_from_sa(&mut suffarr)?;
+
             let mut ref_ids: HashMap<String, usize> = HashMap::new();
-            let mut refs: HashMap<String, String> = HashMap::new();
-            for (idx, result) in ref_reader.records().enumerate() {
-                let result = result?;
-                let record_id = result.id();
-                let record_seq = std::str::from_utf8(result.seq())?.to_string();
-                ref_ids.insert(record_id.to_string(), idx);
-                refs.insert(record_id.to_string(), record_seq);
+            for (idx, result) in refs.keys().enumerate() {
+                ref_ids.insert(result.to_string(), idx);
             }
 
             let mut ll_array = Mutex::new(Array2::<f64>::zeros((read_ids.len(), ref_ids.len())));
@@ -272,31 +292,6 @@ fn main() -> Result<()>{
 
             File::create("read_idxs.json").unwrap().write_all(read_idxs.as_bytes())?;
             File::create("ref_idxs.json").unwrap().write_all(ref_idxs.as_bytes())?;
-
-            let mut suffarr = match exists(format!("{}.sufr", ref_file))?{
-                true => {SuffixArray::read(format!("{}.sufr", ref_file).as_str(), false)?},
-                _ => {
-                    let sequence_delimiter = b'$';
-                    let seq_data = read_sequence_file(Path::new(ref_file), sequence_delimiter)?;
-
-                    let builder_args = SufrBuilderArgs {
-                        text: seq_data.seq,
-                        path: Some(format!("{}.sufr", ref_file)),
-                        low_memory: false,
-                        max_query_len: None,
-                        is_dna: true,
-                        allow_ambiguity: false,
-                        ignore_softmask: true,
-                        sequence_starts: seq_data.start_positions.into_iter().collect(),
-                        sequence_names: seq_data.sequence_names,
-                        num_partitions: 16,
-                        seed_mask: None,
-                        random_seed: 42,
-                    };
-
-                    SuffixArray::new(builder_args)?
-                }
-            };
 
             process_fastq_file(&mut suffarr, &refs, Path::new(reads_file), percent_mismatch, outpath.as_ref(), &ref_ids, &read_ids, &mut ll_array)?;
 
