@@ -4,8 +4,10 @@ pub mod utils;
 use clap::{arg, Command};
 use itertools::Itertools;
 use ndarray::Array2;
+use ndarray::prelude::*;
 use ndarray_npy::write_npy;
 use utils::*;
+use std::f64;
 use std::{collections::HashMap, fs::File, io::Write, sync::Mutex};
 use bio::io::fastq;
 use indicatif::{ProgressStyle, ProgressIterator};
@@ -88,14 +90,16 @@ fn process_fastq_file(suffarr: &mut SuffixArray,
                     refs: &HashMap<String, String>, 
                     fastq_file: &Path, 
                     percent_mismatch: &f32, 
-                    outpath: Option<&Mutex<File>>, 
+                    // outpath: Option<&Mutex<File>>, 
                     ref_ids: &HashMap<String, usize>, 
                     read_ids: &HashMap<String, usize>, 
-                    ll_array: &mut Mutex<Array2<f64>>)-> Result<()>
+                    ll_array: &mut Mutex<Array2<f64>>)-> Result<HashMap<(usize, usize), usize>>
 {
     let pb = ProgressStyle::with_template("{spinner:.green} [{elapsed_precise}] [{wide_bar:.cyan/blue}] {bytes}/{total_bytes} ({eta})").unwrap();
 
     let reader = fastq::Reader::from_file(fastq_file).unwrap();
+
+    let mut out_aligns: HashMap<(usize, usize), usize> = HashMap::new();
 
     let fastq_records = reader.records()
         .map(|x| x.unwrap())
@@ -113,22 +117,87 @@ fn process_fastq_file(suffarr: &mut SuffixArray,
             hits.iter()
                 // .map(|(ref_id, positions)| (ref_id.clone(), positions))
                 .for_each(|x| {
-                    let outstr = format!("{}\t{}\t{}\t{}\n", read_id, x.0, x.1.0, x.1.1);
+                    // let outstr = format!("{}\t{}\t{}\t{}\n", read_id, x.0, x.1.0, x.1.1);
                     // dbg!(read_ids, &read_id);
                     let read_idx = read_ids.get(&read_id).unwrap();
                     let ref_idx = ref_ids.get(&x.0).unwrap();
 
-                    match outpath{
-                        Some(file) => {file.lock().unwrap().write_all(outstr.as_bytes()).unwrap();},
-                        None => {print!("{}", outstr)},
-                    };
+                    out_aligns.insert((*read_idx, *ref_idx), x.1.0);
+                    // match outpath{
+                    //     Some(file) => {file.lock().unwrap().write_all(outstr.as_bytes()).unwrap();},
+                    //     None => {print!("{}", outstr)},
+                    // };
 
                     ll_array.lock().unwrap()[[read_idx.clone(), ref_idx.clone()]] = x.1.1;
                 });
         });
 
-    Ok(())
+    Ok(out_aligns)
 }
+
+fn get_proportions(ll_array: &Array2<f64>, num_iter: usize)->Vec<(usize, usize, f64)>{
+    let num_reads = ll_array.shape()[0];
+    let num_srcs = ll_array.shape()[1];
+
+    let mut props = Array::<f64, _>::zeros((num_iter+1, num_srcs).f());
+    let mut w = Array::<f64, _>::zeros((num_reads, num_srcs).f());
+
+    props.slice_mut(s![0, ..num_srcs]).fill(1_f64/num_srcs as f64);
+
+    for i in 0..num_iter{
+        // let tmp_w = Array::<f64, _>::ones((num_reads, num_srcs).f());
+        let tmp_prop = props.slice_mut(s![i, ..num_srcs]);
+
+        w = ll_array.clone()*tmp_prop;
+        // clik = np.sum(w, axis=1)[:, np.newaxis]
+        let clik = w.sum_axis(Axis(1)).insert_axis(Axis(1));
+        
+
+        // dbg!(w.shape(), clik.shape());
+
+        w = w/clik;
+
+        // props[i+1] = np.mean(w, axis=0)
+        props.slice_mut(s![i+1, ..num_srcs]).assign(w.mean_axis(Axis(0)).as_ref().unwrap());
+
+    }
+
+    let mut em_props = Array::<f64, _>::zeros((num_srcs).f());
+
+    em_props.assign(&props.slice(s![num_iter, ..]));
+
+    // w = em_props*np.exp(ll_array)
+    w = ll_array.clone()*em_props;
+    // clik = np.sum(w, axis=1)[:, np.newaxis]
+    let clik = w.sum_axis(Axis(1)).insert_axis(Axis(1));
+    // w /= clik
+    w = w/clik;
+
+    let mut results = vec![];
+
+    for (i, row) in w.axis_iter(Axis(0)).enumerate() {
+        // dbg!(row.shape());
+        let (max_idx, _) =
+            row.iter()
+                .enumerate()
+                .fold((0, row[0]), |(idx_max, val_max), (idx, val)| {
+                    if &val_max > val {
+                        (idx_max, val_max)
+                    } else {
+                        (idx, *val)
+                    }
+                });
+        // dbg!(i, row.shape());
+        // dbg!();
+        results.push((max_idx, i, ll_array.ln()[[i, max_idx]]));
+    }    
+
+
+    results
+}
+
+
+
 
 fn main() -> Result<()>{
     let matches = Command::new("Maximum Likelihood Metagenomic Classification")
@@ -267,7 +336,7 @@ fn main() -> Result<()>{
             let outfile = sub_m.get_one::<String>("out").unwrap().as_str();
 
             let outpath = Some(Mutex::new(File::create(outfile).unwrap()));
-            let outstr = format!("ReadID\tRefID\tStartPos\tPosterior\n");
+            let outstr = format!("ReadID\tRefID\tStart_pos\tPosterior\n");
             match outpath.as_ref(){
                 Some(file) => {file.lock().unwrap().write_all(outstr.as_bytes()).unwrap();},
                 None => {print!("{}", outstr)},
@@ -279,10 +348,12 @@ fn main() -> Result<()>{
             let fastq_reader = fastq::Reader::from_file(Path::new(reads_file)).unwrap();
 
             let mut read_ids: HashMap<String, usize> = HashMap::new();
+            let mut read_ids_rev: HashMap<usize, String> = HashMap::new();
             for result in fastq_reader.records().enumerate() {
                 let record_id = result.1.expect("Error during fastq record parsing").id().to_string();
                 // dbg!(&record_id);
-                read_ids.insert(record_id, result.0);
+                read_ids.insert(record_id.clone(), result.0);
+                read_ids_rev.insert(result.0, record_id);
             }
 
             // dbg!(&read_ids);
@@ -292,11 +363,14 @@ fn main() -> Result<()>{
             let refs = get_refs_from_sa(&mut suffarr)?;
 
             let mut ref_ids: HashMap<String, usize> = HashMap::new();
+            let mut ref_ids_rev: HashMap<usize, String> = HashMap::new();
             for (idx, result) in refs.keys().enumerate() {
                 ref_ids.insert(result.to_string(), idx);
+                ref_ids_rev.insert(idx,result.to_string());
             }
 
             let mut ll_array = Mutex::new(Array2::<f64>::zeros((read_ids.len(), ref_ids.len())));
+            ll_array.lock().unwrap().fill(f64::MIN);
 
             let read_idxs = serde_json::to_string(&read_ids).unwrap();
             let ref_idxs = serde_json::to_string(&ref_ids).unwrap();
@@ -304,7 +378,21 @@ fn main() -> Result<()>{
             File::create("read_idxs.json").unwrap().write_all(read_idxs.as_bytes())?;
             File::create("ref_idxs.json").unwrap().write_all(ref_idxs.as_bytes())?;
 
-            process_fastq_file(&mut suffarr, &refs, Path::new(reads_file), percent_mismatch, outpath.as_ref(), &ref_ids, &read_ids, &mut ll_array)?;
+            let out_alignments = process_fastq_file(&mut suffarr, &refs, Path::new(reads_file), percent_mismatch, &ref_ids, &read_ids, &mut ll_array)?;
+
+            let props = get_proportions(&ll_array.lock().unwrap().exp(), 100);
+
+            // dbg!(props);
+            for (ref_id, read_id, val) in props{
+                // dbg!(read_ids_rev.get(&read_id).unwrap());
+                // dbg!(ref_id, ref_ids_rev.get(&ref_id).unwrap());
+                // println!("{}\t{}\t{}", read_ids_rev.get(&read_id).unwrap(), ref_ids_rev.get(&ref_id).unwrap(), val);
+                let outstr = format!("{}\t{}\t{}\t{:.5}\n", read_ids_rev.get(&read_id).unwrap(), ref_ids_rev.get(&ref_id).unwrap(), out_alignments.get(&(read_id, ref_id)).unwrap(), val);
+                match outpath.as_ref(){
+                    Some(file) => {file.lock().unwrap().write_all(outstr.as_bytes()).unwrap();},
+                    None => {print!("{}", outstr)},
+                };
+            }
 
             write_npy("ll_array.npy", &ll_array.into_inner().unwrap())?;
         },
