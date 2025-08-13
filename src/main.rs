@@ -8,7 +8,7 @@ use ndarray::prelude::*;
 use ndarray_npy::write_npy;
 use utils::*;
 use std::f64;
-use std::{collections::HashMap, fs::File, io::Write, sync::Mutex};
+use std::{collections::HashMap, fs::File, io::{BufReader, Write}, sync::Mutex};
 use bio::io::fastq;
 use indicatif::{ProgressStyle, ProgressIterator};
 use rayon::prelude::*;
@@ -17,6 +17,7 @@ use anyhow::Result;
 use libsufr::{
     suffix_array::SuffixArray, types::{ExtractResult, ExtractOptions, SufrBuilderArgs}, util::read_sequence_file
 };
+use flate2::read::GzDecoder;
 
 
 fn kmer_vec_for_record(record: &fastq::Record, percent_mismatch: &f32)->Result<Vec<String>>{
@@ -97,13 +98,29 @@ fn process_fastq_file(suffarr: &mut SuffixArray,
 {
     let pb = ProgressStyle::with_template("{spinner:.green} [{elapsed_precise}] [{wide_bar:.cyan/blue}] {bytes}/{total_bytes} ({eta})").unwrap();
 
-    let reader = fastq::Reader::from_file(fastq_file).unwrap();
+    let fastq_records = match get_extension_from_filename(fastq_file.to_str().expect("Invalid reads file!")){
+       Some("gz") => {
+            let f = File::open(fastq_file)?;
+            let decoder = GzDecoder::new(f);
+
+            fastq::Reader::from_bufread(BufReader::new(decoder)).records().map(|x| x.unwrap()).collect_vec()
+            // fastq::Reader::from_bufread(GzDecoder::new(reader)).records()
+       },
+       Some("fastq") => {
+            let f = File::open(fastq_file)?;
+            let reader = BufReader::new(f);
+            fastq::Reader::from_bufread(reader).records().map(|x| x.unwrap()).collect_vec()
+        },
+       _ => {panic!("Invalid file type for reads!")}
+    };
 
     let mut out_aligns: HashMap<(usize, usize), usize> = HashMap::new();
 
-    let fastq_records = reader.records()
-        .map(|x| x.unwrap())
-        .collect_vec();
+    // let fastq_records = reader
+    //     .records()
+    //     .map(|x| x.unwrap())
+    //     .collect_vec();
+
     fastq_records
         .iter()
         .progress_with_style(pb)
@@ -345,18 +362,28 @@ fn main() -> Result<()>{
 
             rayon::ThreadPoolBuilder::new().num_threads(*num_threads).build_global()?;
 
-            let fastq_reader = fastq::Reader::from_file(Path::new(reads_file)).unwrap();
+            let fastq_records = match get_extension_from_filename(reads_file){
+                Some("gz") => {
+                    let f = File::open(reads_file)?;
+                    let decoder = GzDecoder::new(f);
+                    fastq::Reader::from_bufread(BufReader::new(decoder)).records().map(|x| x.unwrap()).collect_vec()
+                },
+                Some("fastq") => {
+                    let f = File::open(reads_file)?;
+                    let reader = BufReader::new(f);
+                    fastq::Reader::from_bufread(reader).records().map(|x| x.unwrap()).collect_vec()
+                },
+                _ => panic!("Invalid file type for reads!")
+            };
 
             let mut read_ids: HashMap<String, usize> = HashMap::new();
             let mut read_ids_rev: HashMap<usize, String> = HashMap::new();
-            for result in fastq_reader.records().enumerate() {
-                let record_id = result.1.expect("Error during fastq record parsing").id().to_string();
-                // dbg!(&record_id);
+            for result in fastq_records.iter().enumerate() {
+                let record_id = result.1.id().to_string();
                 read_ids.insert(record_id.clone(), result.0);
                 read_ids_rev.insert(result.0, record_id);
             }
 
-            // dbg!(&read_ids);
 
             let mut suffarr: SuffixArray = SuffixArray::read(ref_file, false)?;
 
@@ -382,11 +409,7 @@ fn main() -> Result<()>{
 
             let props = get_proportions(&ll_array.lock().unwrap().exp(), 100);
 
-            // dbg!(props);
             for (ref_id, read_id, val) in props{
-                // dbg!(read_ids_rev.get(&read_id).unwrap());
-                // dbg!(ref_id, ref_ids_rev.get(&ref_id).unwrap());
-                // println!("{}\t{}\t{}", read_ids_rev.get(&read_id).unwrap(), ref_ids_rev.get(&ref_id).unwrap(), val);
                 let outstr = format!("{}\t{}\t{}\t{:.5}\n", read_ids_rev.get(&read_id).unwrap(), ref_ids_rev.get(&ref_id).unwrap(), out_alignments.get(&(read_id, ref_id)).unwrap(), val);
                 match outpath.as_ref(){
                     Some(file) => {file.lock().unwrap().write_all(outstr.as_bytes()).unwrap();},
