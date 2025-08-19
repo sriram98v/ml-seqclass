@@ -39,15 +39,18 @@ fn match_read_kmers(suffarr: &mut SuffixArray, record: &fastq::Record, percent_m
     suffarr.extract(opts)
 }
 
-/// Returns a vec with each element being (reference_name, (alignment_start_pos, likelihood of alignment))
-fn query_read(suffarr: &mut SuffixArray, refs: &HashMap<String, String>, record: &fastq::Record, percent_mismatch: &f32)->Result<Vec<(String, (usize, f64))>>{
+/// Returns a pair of Hashmaps. The first maps the read to its best alignment to each reference (reference_name, (alignment_start_pos, likelihood of alignment)).
+/// The second returns the sum of likelihoods of all alignments to each reference.(reference_name, (sum of likelihood of all alignments)). 
+fn query_read(suffarr: &mut SuffixArray, refs: &HashMap<String, String>, record: &fastq::Record, percent_mismatch: &f32)->Result<(HashMap<String, (usize, f64)>, HashMap<String, f64>)>{
 
     let read_len = record.seq().len();
     let read_seq = std::str::from_utf8(record.seq())?;
     let read_qual = record.qual();
     let max_num_mismatches: usize = (read_len as f32 * (percent_mismatch/100_f32)).floor() as usize;
 
-    let match_set: Mutex<HashMap<String, (usize, f64)>> = Mutex::new(HashMap::new());
+    let best_match: Mutex<HashMap<String, (usize, f64)>> = Mutex::new(HashMap::new());
+    let match_likelihood: Mutex<HashMap<String, f64>> = Mutex::new(HashMap::new());
+
 
     let matches = match_read_kmers(suffarr, record, percent_mismatch)?;
 
@@ -70,7 +73,8 @@ fn query_read(suffarr: &mut SuffixArray, refs: &HashMap<String, String>, record:
                 if num_mismatches(read_seq, ref_match_seg)<=max_num_mismatches{
                     let match_log_prob = compute_match_log_prob(read_seq, read_qual, ref_match_seg);
 
-                    match_set.lock().unwrap().entry(seq_name.to_string())
+                    // Update best match found
+                    best_match.lock().unwrap().entry(seq_name.to_string())
                         .and_modify(|e| {
                             // e.push((align_start, match_log_prob))
                             if e.1<=match_log_prob{
@@ -78,12 +82,21 @@ fn query_read(suffarr: &mut SuffixArray, refs: &HashMap<String, String>, record:
                             }
                         })
                         .or_insert((align_start, match_log_prob));
+
+                    // Update match score
+                    match_likelihood.lock().unwrap().entry(seq_name.to_string())
+                        .and_modify(|e| {
+                            // e.push((align_start, match_log_prob))
+                            *e += match_log_prob;
+                        })
+                        .or_insert(match_log_prob);
+
                 }
             }
         }
     });
 
-    Ok(match_set.into_inner().unwrap().into_iter().collect_vec())
+    Ok((best_match.into_inner().unwrap(), match_likelihood.into_inner().unwrap()))
 }
 
 fn process_fastq_file(suffarr: &mut SuffixArray, 
@@ -108,27 +121,28 @@ fn process_fastq_file(suffarr: &mut SuffixArray,
         .iter()
         .progress_with_style(pb)
         .map(|record| {
-            let hits = query_read(suffarr, refs, record, percent_mismatch).unwrap();
+            let (best_hits, match_likelihoods) = query_read(suffarr, refs, record, percent_mismatch).unwrap();
             // dbg!(&hits);
-            (record.id().to_string(), hits)
+            (record.id().to_string(), best_hits, match_likelihoods)
         })
         // .par_bridge()
-        .for_each(|(read_id, hits)| {
-            hits.iter()
+        .for_each(|(read_id, best_hits, match_likelihoods)| {
+            match_likelihoods.iter()
                 // .map(|(ref_id, positions)| (ref_id.clone(), positions))
                 .for_each(|x| {
                     // let outstr = format!("{}\t{}\t{}\t{}\n", read_id, x.0, x.1.0, x.1.1);
                     // dbg!(read_ids, &read_id);
                     let read_idx = read_ids.get(&read_id).unwrap();
-                    let ref_idx = ref_ids.get(&x.0).unwrap();
+                    let ref_idx = ref_ids.get(x.0).unwrap();
+                    let best_align = best_hits.get(x.0).unwrap();
 
-                    out_aligns.insert((*read_idx, *ref_idx), x.1.0);
+                    out_aligns.insert((*read_idx, *ref_idx), best_align.0);
                     // match outpath{
                     //     Some(file) => {file.lock().unwrap().write_all(outstr.as_bytes()).unwrap();},
                     //     None => {print!("{}", outstr)},
                     // };
 
-                    ll_array.lock().unwrap()[[read_idx.clone(), ref_idx.clone()]] = x.1.1;
+                    ll_array.lock().unwrap()[[read_idx.clone(), ref_idx.clone()]] = *x.1;
                 });
         });
 
