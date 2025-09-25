@@ -7,6 +7,7 @@ use std::path::Path;
 use std::{io::Write, fs};
 use std::collections::HashMap;
 use tabled::Table;
+use std::ffi::OsStr;
 
 /// Compute probability of match given ref is true source
 pub fn compute_match_log_prob(q_seq: &str, quality_score_vec: &[u8], aligned_ref_seq: &str) -> f64{
@@ -191,6 +192,13 @@ pub fn summarize_index(sufr_file: &str) -> Result<()> {
 
     Ok(())
 }
+
+pub fn get_extension_from_filename(filename: &str) -> Option<&str> {
+    Path::new(filename)
+        .extension()
+        .and_then(OsStr::to_str)
+}
+
 
 // fn build_sa(ref_file: &Path, outfile: &String)->Result<()>{
 //     let sequence_delimiter = b'$';
