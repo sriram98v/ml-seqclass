@@ -7,7 +7,7 @@ use ndarray::Array2;
 use ndarray::prelude::*;
 use ndarray_npy::write_npy;
 use utils::*;
-use std::f64;
+// use std::f64;
 use std::{collections::HashMap, fs::File, io::{BufReader, Write}, sync::Mutex};
 use bio::io::fastq;
 use indicatif::{ProgressStyle, ProgressIterator};
@@ -42,15 +42,15 @@ fn match_read_kmers(suffarr: &mut SuffixArray, record: &fastq::Record, percent_m
 
 /// Returns a pair of Hashmaps. The first maps the read to its best alignment to each reference (reference_name, (alignment_start_pos, likelihood of alignment)).
 /// The second returns the sum of likelihoods of all alignments to each reference.(reference_name, (sum of likelihood of all alignments)). 
-fn query_read(suffarr: &mut SuffixArray, refs: &HashMap<String, String>, record: &fastq::Record, percent_mismatch: &f32)->Result<(HashMap<String, (usize, f64)>, HashMap<String, f64>)>{
+fn query_read(suffarr: &mut SuffixArray, refs: &HashMap<String, String>, record: &fastq::Record, percent_mismatch: &f32)->Result<(HashMap<String, (usize, f32)>, HashMap<String, f32>)>{
 
     let read_len = record.seq().len();
     let read_seq = std::str::from_utf8(record.seq())?;
     let read_qual = record.qual();
     let max_num_mismatches: usize = (read_len as f32 * (percent_mismatch/100_f32)).floor() as usize;
 
-    let best_match: Mutex<HashMap<String, (usize, f64)>> = Mutex::new(HashMap::new());
-    let match_likelihood: Mutex<HashMap<String, f64>> = Mutex::new(HashMap::new());
+    let best_match: Mutex<HashMap<String, (usize, f32)>> = Mutex::new(HashMap::new());
+    let match_likelihood: Mutex<HashMap<String, f32>> = Mutex::new(HashMap::new());
 
 
     let matches = match_read_kmers(suffarr, record, percent_mismatch)?;
@@ -107,7 +107,7 @@ fn process_fastq_file(suffarr: &mut SuffixArray,
                     // outpath: Option<&Mutex<File>>, 
                     ref_ids: &HashMap<String, usize>, 
                     read_ids: &HashMap<String, usize>, 
-                    ll_array: &mut Mutex<Array2<f64>>)-> Result<HashMap<(usize, usize), usize>>
+                    ll_array: &mut Mutex<Array2<f32>>)-> Result<HashMap<(usize, usize), usize>>
 {
     let pb = ProgressStyle::with_template("{spinner:.green} [{elapsed_precise}] [{wide_bar:.cyan/blue}] {bytes}/{total_bytes} ({eta})").unwrap();
 
@@ -166,17 +166,17 @@ fn process_fastq_file(suffarr: &mut SuffixArray,
     Ok(out_aligns)
 }
 
-fn get_proportions(ll_array: &Array2<f64>, num_iter: usize)->Vec<(usize, usize, f64)>{
+fn get_proportions(ll_array: &Array2<f32>, num_iter: usize)->Vec<(usize, usize, f32)>{
     let num_reads = ll_array.shape()[0];
     let num_srcs = ll_array.shape()[1];
 
-    let mut props = Array::<f64, _>::zeros((num_iter+1, num_srcs).f());
-    let mut w = Array::<f64, _>::zeros((num_reads, num_srcs).f());
+    let mut props = Array::<f32, _>::zeros((num_iter+1, num_srcs).f());
+    let mut w = Array::<f32, _>::zeros((num_reads, num_srcs).f());
 
-    props.slice_mut(s![0, ..num_srcs]).fill(1_f64/num_srcs as f64);
+    props.slice_mut(s![0, ..num_srcs]).fill(1_f32/num_srcs as f32);
 
     for i in 0..num_iter{
-        // let tmp_w = Array::<f64, _>::ones((num_reads, num_srcs).f());
+        // let tmp_w = Array::<f32, _>::ones((num_reads, num_srcs).f());
         let tmp_prop = props.slice_mut(s![i, ..num_srcs]);
 
         w = ll_array.clone()*tmp_prop;
@@ -193,7 +193,7 @@ fn get_proportions(ll_array: &Array2<f64>, num_iter: usize)->Vec<(usize, usize, 
 
     }
 
-    let mut em_props = Array::<f64, _>::zeros((num_srcs).f());
+    let mut em_props = Array::<f32, _>::zeros((num_srcs).f());
 
     em_props.assign(&props.slice(s![num_iter, ..]));
 
@@ -410,16 +410,18 @@ fn main() -> Result<()>{
                 ref_ids_rev.insert(idx,result.to_string());
             }
 
-            let mut ll_array = Mutex::new(Array2::<f64>::zeros((read_ids.len(), ref_ids.len())));
-            ll_array.lock().unwrap().fill(f64::MIN);
+            let mut ll_array = Mutex::new(Array2::<f32>::zeros((read_ids.len(), ref_ids.len())));
+            ll_array.lock().unwrap().fill(f32::MIN);
 
             let read_idxs = serde_json::to_string(&read_ids).unwrap();
             let ref_idxs = serde_json::to_string(&ref_ids).unwrap();
 
-            File::create("read_idxs.json").unwrap().write_all(read_idxs.as_bytes())?;
-            File::create("ref_idxs.json").unwrap().write_all(ref_idxs.as_bytes())?;
+            // File::create("read_idxs.json").unwrap().write_all(read_idxs.as_bytes())?;
+            // File::create("ref_idxs.json").unwrap().write_all(ref_idxs.as_bytes())?;
 
             let out_alignments = process_fastq_file(&mut suffarr, &refs, Path::new(reads_file), percent_mismatch, &ref_ids, &read_ids, &mut ll_array)?;
+
+            // write_npy("ll_array.npy", &ll_array.into_inner().unwrap())?;
 
             let props = get_proportions(&ll_array.lock().unwrap().exp(), 100);
 
@@ -431,7 +433,6 @@ fn main() -> Result<()>{
                 };
             }
 
-            write_npy("ll_array.npy", &ll_array.into_inner().unwrap())?;
         },
         _ => {
             println!("No option selected! Refer help page (-h flag)");

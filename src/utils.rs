@@ -10,11 +10,11 @@ use tabled::Table;
 use std::ffi::OsStr;
 
 /// Compute probability of match given ref is true source
-pub fn compute_match_log_prob(q_seq: &str, quality_score_vec: &[u8], aligned_ref_seq: &str) -> f64{
-    let mut match_log_likelihood = 0_f64;
+pub fn compute_match_log_prob(q_seq: &str, quality_score_vec: &[u8], aligned_ref_seq: &str) -> f32{
+    let mut match_log_likelihood = 0_f32;
     for (read_char,reference_char,quality_score) in izip!(q_seq.chars(), aligned_ref_seq.chars(), quality_score_vec){
         match read_char==reference_char{
-            true => match_log_likelihood += (1_f64-error_prob(quality_score.clone())).log10(),
+            true => match_log_likelihood += (1_f32-error_prob(quality_score.clone())).log10(),
             false => match_log_likelihood += (error_prob(quality_score.clone())).log10(),
         }
     }
@@ -31,7 +31,7 @@ pub fn num_mismatches(read_seq: &str, ref_seq: &str)->usize{
     read_seq.chars().zip(ref_seq.chars()).map(|(a,b)| (a!=b) as usize).sum()
 }
 
-pub fn write_matches(outpath: Option<&String>, matches: &HashMap<String, Vec<(String, usize, f64)>>)->std::io::Result<()>
+pub fn write_matches(outpath: Option<&String>, matches: &HashMap<String, Vec<(String, usize, f32)>>)->std::io::Result<()>
 {
     match outpath{
         Some(path) => {
@@ -70,12 +70,12 @@ pub fn write_matches(outpath: Option<&String>, matches: &HashMap<String, Vec<(St
     Ok(())
 }
 
-pub fn error_prob(q: u8)->f64{
-    10_f64.powf(-(q as f64/10_f64))
+pub fn error_prob(q: u8)->f32{
+    10_f32.powf(-(q as f32/10_f32))
 }
 
-pub fn error_log_prob(q: u8)->f64{
-    -(q as f64/10_f64)
+pub fn error_log_prob(q: u8)->f32{
+    -(q as f32/10_f32)
 }
 
 pub fn complement(q_seq: Vec<char>)->Vec<char>{
@@ -133,7 +133,7 @@ pub fn summarize_index(sufr_file: &str) -> Result<()> {
     ]);
     rows.push(vec![
         "File Size".to_string(),
-        format!("{} bytes", num_fmt.format(",.0", meta.file_size as f64)),
+        format!("{} bytes", num_fmt.format(",.0", meta.file_size as f32)),
     ]);
     rows.push(vec![
         "File Version".to_string(),
@@ -150,11 +150,11 @@ pub fn summarize_index(sufr_file: &str) -> Result<()> {
     ]);
     rows.push(vec![
         "Text Length".to_string(),
-        num_fmt.format(",.0", meta.text_len as f64),
+        num_fmt.format(",.0", meta.text_len as f32),
     ]);
     rows.push(vec![
         "Len Suffixes".to_string(),
-        num_fmt.format(",.0", meta.len_suffixes as f64),
+        num_fmt.format(",.0", meta.len_suffixes as f32),
     ]);
 
     match meta.sort_type {
@@ -163,13 +163,13 @@ pub fn summarize_index(sufr_file: &str) -> Result<()> {
         }
         SuffixSortType::MaxQueryLen(max_query_len) => rows.push(vec![
             "Max query len".to_string(),
-            num_fmt.format(",.0", max_query_len as f64),
+            num_fmt.format(",.0", max_query_len as f32),
         ]),
     };
 
     rows.push(vec![
         "Num sequences".to_string(),
-        num_fmt.format(",.0", meta.num_sequences as f64),
+        num_fmt.format(",.0", meta.num_sequences as f32),
     ]);
     let seq_starts = meta
         .sequence_starts
