@@ -5,7 +5,6 @@ use clap::{arg, Command};
 use itertools::Itertools;
 use ndarray::Array2;
 use ndarray::prelude::*;
-use ndarray_npy::write_npy;
 use utils::*;
 // use std::f64;
 use std::{collections::HashMap, fs::File, io::{BufReader, Write}, sync::Mutex};
@@ -18,7 +17,7 @@ use libsufr::{
     suffix_array::SuffixArray, types::{ExtractResult, ExtractOptions, SufrBuilderArgs}, util::read_sequence_file
 };
 use flate2::read::GzDecoder;
-
+use ndarray_stats::QuantileExt;
 
 fn kmer_vec_for_record(record: &fastq::Record, percent_mismatch: &f32)->Result<Vec<String>>{
     let seq_len = record.seq().len();
@@ -109,7 +108,7 @@ fn process_fastq_file(suffarr: &mut SuffixArray,
                     read_ids: &HashMap<String, usize>, 
                     ll_array: &mut Mutex<Array2<f32>>)-> Result<HashMap<(usize, usize), usize>>
 {
-    let pb = ProgressStyle::with_template("{spinner:.green} [{elapsed_precise}] [{wide_bar:.cyan/blue}] {bytes}/{total_bytes} ({eta})").unwrap();
+    let pb = ProgressStyle::with_template("Finding pairwise alignments: {spinner:.green} [{elapsed_precise}] [{wide_bar:.cyan/blue}] {bytes}/{total_bytes} ({eta})").unwrap();
 
     let fastq_records = match get_extension_from_filename(fastq_file.to_str().expect("Invalid reads file!")){
        Some("gz") => {
@@ -145,19 +144,12 @@ fn process_fastq_file(suffarr: &mut SuffixArray,
         // .par_bridge()
         .for_each(|(read_id, best_hits, match_likelihoods)| {
             match_likelihoods.iter()
-                // .map(|(ref_id, positions)| (ref_id.clone(), positions))
                 .for_each(|x| {
-                    // let outstr = format!("{}\t{}\t{}\t{}\n", read_id, x.0, x.1.0, x.1.1);
-                    // dbg!(read_ids, &read_id);
                     let read_idx = read_ids.get(&read_id).unwrap();
                     let ref_idx = ref_ids.get(x.0).unwrap();
                     let best_align = best_hits.get(x.0).unwrap();
 
                     out_aligns.insert((*read_idx, *ref_idx), best_align.0);
-                    // match outpath{
-                    //     Some(file) => {file.lock().unwrap().write_all(outstr.as_bytes()).unwrap();},
-                    //     None => {print!("{}", outstr)},
-                    // };
 
                     ll_array.lock().unwrap()[[read_idx.clone(), ref_idx.clone()]] = *x.1;
                 });
@@ -166,29 +158,27 @@ fn process_fastq_file(suffarr: &mut SuffixArray,
     Ok(out_aligns)
 }
 
-fn get_proportions(ll_array: &Array2<f32>, num_iter: usize)->Vec<(usize, usize, f32)>{
+#[allow(unused_assignments)]
+fn get_proportions(ll_array: &Array2<f32>, num_iter: usize)->Vec<(usize, usize)>{
     let num_reads = ll_array.shape()[0];
     let num_srcs = ll_array.shape()[1];
+
+    let pb = ProgressStyle::with_template("Running EM: {spinner:.green} [{elapsed_precise}] [{wide_bar:.cyan/blue}] {bytes}/{total_bytes} ({eta})").unwrap();
 
     let mut props = Array::<f32, _>::zeros((num_iter+1, num_srcs).f());
     let mut w = Array::<f32, _>::zeros((num_reads, num_srcs).f());
 
     props.slice_mut(s![0, ..num_srcs]).fill(1_f32/num_srcs as f32);
 
-    for i in 0..num_iter{
-        // let tmp_w = Array::<f32, _>::ones((num_reads, num_srcs).f());
+    for i in (0..num_iter).progress_with_style(pb) {
         let tmp_prop = props.slice_mut(s![i, ..num_srcs]);
 
         w = ll_array.clone()*tmp_prop;
-        // clik = np.sum(w, axis=1)[:, np.newaxis]
         let clik = w.sum_axis(Axis(1)).insert_axis(Axis(1));
-        
-
-        // dbg!(w.shape(), clik.shape());
 
         w = w/clik;
+        w.mapv_inplace(|x| if x.is_nan() { 0. } else { x });
 
-        // props[i+1] = np.mean(w, axis=0)
         props.slice_mut(s![i+1, ..num_srcs]).assign(w.mean_axis(Axis(0)).as_ref().unwrap());
 
     }
@@ -197,32 +187,20 @@ fn get_proportions(ll_array: &Array2<f32>, num_iter: usize)->Vec<(usize, usize, 
 
     em_props.assign(&props.slice(s![num_iter, ..]));
 
-    // w = em_props*np.exp(ll_array)
+
     w = ll_array.clone()*em_props;
-    // clik = np.sum(w, axis=1)[:, np.newaxis]
+
     let clik = w.sum_axis(Axis(1)).insert_axis(Axis(1));
-    // w /= clik
+
     w = w/clik;
+    w.mapv_inplace(|x| if x.is_nan() { 0. } else { x });
 
-    let mut results = vec![];
+    let pb = ProgressStyle::with_template("Finding optimal assignments: {spinner:.green} [{elapsed_precise}] [{wide_bar:.cyan/blue}] {bytes}/{total_bytes} ({eta})").unwrap();
 
-    for (i, row) in w.axis_iter(Axis(0)).enumerate() {
-        // dbg!(row.shape());
-        let (max_idx, _) =
-            row.iter()
-                .enumerate()
-                .fold((0, row[0]), |(idx_max, val_max), (idx, val)| {
-                    if &val_max > val {
-                        (idx_max, val_max)
-                    } else {
-                        (idx, *val)
-                    }
-                });
-        // dbg!(i, row.shape());
-        // dbg!();
-        results.push((max_idx, i, ll_array.ln()[[i, max_idx]]));
-    }    
-
+    let results: Vec<(usize, usize)> = w.axis_iter(Axis(0)).enumerate().progress_with_style(pb).par_bridge().map(|(row_idx, row)| {
+        let row_argmax = row.argmax_skipnan().unwrap();
+        (row_idx, row_argmax)
+    }).collect();
 
     results
 }
@@ -410,27 +388,29 @@ fn main() -> Result<()>{
                 ref_ids_rev.insert(idx,result.to_string());
             }
 
-            let mut ll_array = Mutex::new(Array2::<f32>::zeros((read_ids.len(), ref_ids.len())));
+            let mut ll_array: Mutex<ArrayBase<ndarray::OwnedRepr<f32>, Dim<[usize; 2]>>> = Mutex::new(Array2::<f32>::zeros((read_ids.len(), ref_ids.len())));
             ll_array.lock().unwrap().fill(f32::MIN);
-
-            let read_idxs = serde_json::to_string(&read_ids).unwrap();
-            let ref_idxs = serde_json::to_string(&ref_ids).unwrap();
-
-            // File::create("read_idxs.json").unwrap().write_all(read_idxs.as_bytes())?;
-            // File::create("ref_idxs.json").unwrap().write_all(ref_idxs.as_bytes())?;
 
             let out_alignments = process_fastq_file(&mut suffarr, &refs, Path::new(reads_file), percent_mismatch, &ref_ids, &read_ids, &mut ll_array)?;
 
-            // write_npy("ll_array.npy", &ll_array.into_inner().unwrap())?;
-
             let props = get_proportions(&ll_array.lock().unwrap().exp(), 100);
 
-            for (ref_id, read_id, val) in props{
-                let outstr = format!("{}\t{}\t{}\t{:.5}\n", read_ids_rev.get(&read_id).unwrap(), ref_ids_rev.get(&ref_id).unwrap(), out_alignments.get(&(read_id, ref_id)).unwrap(), val);
-                match outpath.as_ref(){
-                    Some(file) => {file.lock().unwrap().write_all(outstr.as_bytes()).unwrap();},
-                    None => {print!("{}", outstr)},
-                };
+
+            let pb = ProgressStyle::with_template("Writing output: {spinner:.green} [{elapsed_precise}] [{wide_bar:.cyan/blue}] {bytes}/{total_bytes} ({eta})").unwrap();
+
+            for (read_id, ref_id) in props.into_iter().progress_with_style(pb){
+                    if out_alignments.get(&(read_id, ref_id)).is_some() && ll_array.lock().unwrap()[[read_id, ref_id]].is_finite(){
+                        let outstr = format!("{}\t{}\t{}\t{:.5}\n", 
+                        read_ids_rev.get(&read_id).unwrap(), 
+                        ref_ids_rev.get(&ref_id).unwrap(), 
+                        out_alignments.get(&(read_id, ref_id)).unwrap(), 
+                        ll_array.lock().unwrap()[[read_id, ref_id]]
+                    );
+                    match outpath.as_ref(){
+                        Some(file) => {file.lock().unwrap().write_all(outstr.as_bytes()).unwrap();},
+                        None => {print!("{}", outstr)},
+                    };
+                }
             }
 
         },
