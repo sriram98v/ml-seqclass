@@ -8,3 +8,5 @@
 *.tar
 *.zip
 *.matches
+bin/
+sim-test/

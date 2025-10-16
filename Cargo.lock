@@ -958,22 +958,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "kgst"
-version = "1.0.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3722534cbea8dd0bc941a8bf1899fc0a29a2ebaddca3e4d44a38d1ddcae1ecec"
-dependencies = [
- "bio",
- "clap",
- "error-chain",
- "fxhash",
- "indicatif",
- "itertools 0.11.0",
- "serde",
- "serde_json",
-]
-
-[[package]]
 name = "lazy_static"
 version = "1.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1695,7 +1679,6 @@ dependencies = [
  "glob",
  "indicatif",
  "itertools 0.12.1",
- "kgst",
  "libsufr",
  "ndarray 0.16.1",
  "ndarray-npy",
