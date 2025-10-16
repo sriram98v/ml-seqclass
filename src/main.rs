@@ -39,6 +39,7 @@ fn match_read_kmers(suffarr: &mut SuffixArray, record: &fastq::Record, percent_m
     suffarr.extract(opts)
 }
 
+/// Aligns a single read to each of the references
 /// Returns a pair of Hashmaps. The first maps the read to its best alignment to each reference (reference_name, (alignment_start_pos, likelihood of alignment)).
 /// The second returns the sum of likelihoods of all alignments to each reference.(reference_name, (sum of likelihood of all alignments)). 
 fn query_read(suffarr: &mut SuffixArray, refs: &HashMap<String, String>, record: &fastq::Record, percent_mismatch: &f32)->Result<(HashMap<String, (usize, f32)>, HashMap<String, f32>)>{
@@ -254,6 +255,10 @@ fn main() -> Result<()>{
                     .required(true)
                     .value_parser(clap::value_parser!(String))
                     )
+                .arg(arg!(-i --iteration <ITER>"Number of iterations for EM")
+                    .default_value("100")
+                    .value_parser(clap::value_parser!(usize))
+                    )
                 .arg(arg!(-o --out <OUT_FILE>"Output file")
                     .default_value("out.matches")
                     .value_parser(clap::value_parser!(String))
@@ -340,6 +345,7 @@ fn main() -> Result<()>{
         Some(("query",  sub_m)) => {
             let ref_file = sub_m.get_one::<String>("source").expect("required").as_str();
             let reads_file = sub_m.get_one::<String>("reads").expect("required").as_str();
+            let num_iter = sub_m.get_one::<usize>("iter").expect("required");
             let num_threads = sub_m.get_one::<usize>("threads").expect("required");
             let percent_mismatch = sub_m.get_one::<f32>("percent_mismatch").expect("required");
             let outfile = sub_m.get_one::<String>("out").unwrap().as_str();
@@ -393,7 +399,7 @@ fn main() -> Result<()>{
 
             let out_alignments = process_fastq_file(&mut suffarr, &refs, Path::new(reads_file), percent_mismatch, &ref_ids, &read_ids, &mut ll_array)?;
 
-            let props = get_proportions(&ll_array.lock().unwrap().exp(), 100);
+            let props = get_proportions(&ll_array.lock().unwrap().exp(), *num_iter);
 
 
             let pb = ProgressStyle::with_template("Writing output: {spinner:.green} [{elapsed_precise}] [{wide_bar:.cyan/blue}] {bytes}/{total_bytes} ({eta})").unwrap();
