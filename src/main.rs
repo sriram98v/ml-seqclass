@@ -7,9 +7,7 @@ use indicatif::ProgressDrawTarget;
 use itertools::Itertools;
 use ndarray::Array2;
 use ndarray::prelude::*;
-use rayon::max_num_threads;
 use utils::*;
-// use std::f64;
 use std::{collections::HashMap, fs::File, io::{BufReader, Write}, sync::Mutex};
 use bio::io::fastq;
 use indicatif::ProgressStyle;
@@ -369,7 +367,7 @@ fn main() -> Result<()>{
 
 
             let num_threads = match sub_m.get_one::<usize>("threads").expect("required"){
-                0 => max_num_threads(),
+                0 => num_cpus::get(),
                 _ => *sub_m.get_one::<usize>("threads").expect("required"),
             };
 
