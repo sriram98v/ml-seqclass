@@ -2,14 +2,17 @@ extern crate clap;
 extern crate shrust;
 pub mod utils;
 use clap::{arg, Command};
+use indicatif::ProgressBar;
+use indicatif::ProgressDrawTarget;
 use itertools::Itertools;
 use ndarray::Array2;
 use ndarray::prelude::*;
+use rayon::max_num_threads;
 use utils::*;
 // use std::f64;
 use std::{collections::HashMap, fs::File, io::{BufReader, Write}, sync::Mutex};
 use bio::io::fastq;
-use indicatif::{ProgressStyle, ProgressIterator};
+use indicatif::ProgressStyle;
 use rayon::prelude::*;
 use std::path::Path;
 use anyhow::Result;
@@ -18,6 +21,7 @@ use libsufr::{
 };
 use flate2::read::GzDecoder;
 use ndarray_stats::QuantileExt;
+use chrono::Local;
 
 fn kmer_vec_for_record(record: &fastq::Record, percent_mismatch: &f32)->Result<Vec<String>>{
     let seq_len = record.seq().len();
@@ -109,8 +113,6 @@ fn process_fastq_file(suffarr: &mut SuffixArray,
                     read_ids: &HashMap<String, usize>, 
                     ll_array: &mut Mutex<Array2<f32>>)-> Result<HashMap<(usize, usize), usize>>
 {
-    let pb = ProgressStyle::with_template("Finding pairwise alignments: {spinner:.green} [{elapsed_precise}] [{wide_bar:.cyan/blue}] {bytes}/{total_bytes} ({eta})").unwrap();
-
     let fastq_records = match get_extension_from_filename(fastq_file.to_str().expect("Invalid reads file!")){
        Some("gz") => {
             let f = File::open(fastq_file)?;
@@ -129,14 +131,12 @@ fn process_fastq_file(suffarr: &mut SuffixArray,
 
     let mut out_aligns: HashMap<(usize, usize), usize> = HashMap::new();
 
-    // let fastq_records = reader
-    //     .records()
-    //     .map(|x| x.unwrap())
-    //     .collect_vec();
-
+    let pb = ProgressBar::with_draw_target(Some(fastq_records.len() as u64), ProgressDrawTarget::stdout());
+    pb.set_style(ProgressStyle::with_template("Finding pairwise alignments: {spinner:.green} [{elapsed_precise}] [{wide_bar:.cyan/blue}] {percent}% ({eta})").unwrap());
+    // pb.set_draw_target();
+    
     fastq_records
         .iter()
-        .progress_with_style(pb)
         .map(|record| {
             let (best_hits, match_likelihoods) = query_read(suffarr, refs, record, percent_mismatch).unwrap();
             // dbg!(&hits);
@@ -154,7 +154,10 @@ fn process_fastq_file(suffarr: &mut SuffixArray,
 
                     ll_array.lock().unwrap()[[read_idx.clone(), ref_idx.clone()]] = *x.1;
                 });
+            pb.inc(1);
         });
+
+    pb.finish_with_message("");
 
     Ok(out_aligns)
 }
@@ -164,14 +167,15 @@ fn get_proportions(ll_array: &Array2<f32>, num_iter: usize)->Vec<(usize, usize)>
     let num_reads = ll_array.shape()[0];
     let num_srcs = ll_array.shape()[1];
 
-    let pb = ProgressStyle::with_template("Running EM: {spinner:.green} [{elapsed_precise}] [{wide_bar:.cyan/blue}] {bytes}/{total_bytes} ({eta})").unwrap();
+    let pb = ProgressBar::new(num_iter as u64);
+    pb.set_style(ProgressStyle::with_template("Running EM: {spinner:.green} [{elapsed_precise}] [{wide_bar:.cyan/blue}] {percent}% ({eta})").unwrap());
 
     let mut props = Array::<f32, _>::zeros((num_iter+1, num_srcs).f());
     let mut w = Array::<f32, _>::zeros((num_reads, num_srcs).f());
 
     props.slice_mut(s![0, ..num_srcs]).fill(1_f32/num_srcs as f32);
 
-    for i in (0..num_iter).progress_with_style(pb) {
+    for i in 0..num_iter {
         let tmp_prop = props.slice_mut(s![i, ..num_srcs]);
 
         w = ll_array.clone()*tmp_prop;
@@ -182,7 +186,10 @@ fn get_proportions(ll_array: &Array2<f32>, num_iter: usize)->Vec<(usize, usize)>
 
         props.slice_mut(s![i+1, ..num_srcs]).assign(w.mean_axis(Axis(0)).as_ref().unwrap());
 
+        pb.inc(1);
+
     }
+    pb.finish_with_message("");
 
     let mut em_props = Array::<f32, _>::zeros((num_srcs).f());
 
@@ -196,12 +203,16 @@ fn get_proportions(ll_array: &Array2<f32>, num_iter: usize)->Vec<(usize, usize)>
     w = w/clik;
     w.mapv_inplace(|x| if x.is_nan() { 0. } else { x });
 
-    let pb = ProgressStyle::with_template("Finding optimal assignments: {spinner:.green} [{elapsed_precise}] [{wide_bar:.cyan/blue}] {bytes}/{total_bytes} ({eta})").unwrap();
+    let pb = ProgressBar::new(w.shape()[0] as u64);
+    pb.set_style(ProgressStyle::with_template("Finding optimal assignments: {spinner:.green} [{elapsed_precise}] [{wide_bar:.cyan/blue}] {percent}% ({eta})").unwrap());
 
-    let results: Vec<(usize, usize)> = w.axis_iter(Axis(0)).enumerate().progress_with_style(pb).par_bridge().map(|(row_idx, row)| {
+    let results: Vec<(usize, usize)> = w.axis_iter(Axis(0)).enumerate().par_bridge().map(|(row_idx, row)| {
         let row_argmax = row.argmax_skipnan().unwrap();
+        pb.inc(1);
         (row_idx, row_argmax)
     }).collect();
+
+    pb.finish_with_message("");
 
     results
 }
@@ -255,7 +266,7 @@ fn main() -> Result<()>{
                     .required(true)
                     .value_parser(clap::value_parser!(String))
                     )
-                .arg(arg!(-i --iteration <ITER>"Number of iterations for EM")
+                .arg(arg!(-i --iter <ITER>"Number of iterations for EM")
                     .default_value("100")
                     .value_parser(clap::value_parser!(usize))
                     )
@@ -263,7 +274,7 @@ fn main() -> Result<()>{
                     .default_value("out.matches")
                     .value_parser(clap::value_parser!(String))
                     )
-                .arg(arg!(-t --threads <THREADS>"Number of threads (defaults to 2)")
+                .arg(arg!(-t --threads <THREADS>"Number of threads (defaults to 2; 0 uses maximum number of threads)")
                     .default_value("2")
                     .value_parser(clap::value_parser!(usize))
                     )
@@ -346,7 +357,6 @@ fn main() -> Result<()>{
             let ref_file = sub_m.get_one::<String>("source").expect("required").as_str();
             let reads_file = sub_m.get_one::<String>("reads").expect("required").as_str();
             let num_iter = sub_m.get_one::<usize>("iter").expect("required");
-            let num_threads = sub_m.get_one::<usize>("threads").expect("required");
             let percent_mismatch = sub_m.get_one::<f32>("percent_mismatch").expect("required");
             let outfile = sub_m.get_one::<String>("out").unwrap().as_str();
 
@@ -358,7 +368,28 @@ fn main() -> Result<()>{
             };
 
 
-            rayon::ThreadPoolBuilder::new().num_threads(*num_threads).build_global()?;
+            let num_threads = match sub_m.get_one::<usize>("threads").expect("required"){
+                0 => max_num_threads(),
+                _ => *sub_m.get_one::<usize>("threads").expect("required"),
+            };
+
+
+
+
+            let log_str = format!("Timestamp: {}\nReads File: {}\nReference Index: {}\nNum Threads: {}\nPercent Mismatch: {}\nEM Iterations: {}\nOutput File: {}",
+                Local::now().format("%Y-%m-%d %H:%M:%S").to_string(),
+                reads_file,
+                ref_file,
+                num_threads,
+                percent_mismatch,
+                num_iter,
+                outfile,
+            );
+
+            println!("{}", log_str);
+
+            
+            rayon::ThreadPoolBuilder::new().num_threads(num_threads).build_global()?;
 
             let fastq_records = match get_extension_from_filename(reads_file){
                 Some("gz") => {
@@ -402,9 +433,10 @@ fn main() -> Result<()>{
             let props = get_proportions(&ll_array.lock().unwrap().exp(), *num_iter);
 
 
-            let pb = ProgressStyle::with_template("Writing output: {spinner:.green} [{elapsed_precise}] [{wide_bar:.cyan/blue}] {bytes}/{total_bytes} ({eta})").unwrap();
+            let pb = ProgressBar::new(props.len() as u64);
+            pb.set_style(ProgressStyle::with_template("Writing output: {spinner:.green} [{elapsed_precise}] [{wide_bar:.cyan/blue}] {percent}% ({eta})").unwrap());
 
-            for (read_id, ref_id) in props.into_iter().progress_with_style(pb){
+            for (read_id, ref_id) in props.into_iter(){
                     if out_alignments.get(&(read_id, ref_id)).is_some() && ll_array.lock().unwrap()[[read_id, ref_id]].is_finite(){
                         let outstr = format!("{}\t{}\t{}\t{:.5}\n", 
                         read_ids_rev.get(&read_id).unwrap(), 
@@ -419,6 +451,7 @@ fn main() -> Result<()>{
                 }
             }
 
+            pb.finish_with_message("");
         },
         _ => {
             println!("No option selected! Refer help page (-h flag)");
