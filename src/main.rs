@@ -233,9 +233,9 @@ fn get_proportions(ll_array: &Array2<f32>, num_iter: usize)->(Vec<(usize, usize)
         w = w/clik;
         w.mapv_inplace(|x| if x.is_nan() { 0. } else { x });
 
-        let penalty = proportions_penalty(&props.slice(s![i, ..num_srcs]).into_owned(), 1.1);
+        // let penalty = proportions_penalty(&props.slice(s![i, ..num_srcs]).into_owned(), 1.1);
 
-        w = w - penalty;
+        // w = w - penalty;
 
         props.slice_mut(s![i+1, ..num_srcs]).assign(w.mean_axis(Axis(0)).as_ref().unwrap());
 
