@@ -1677,7 +1677,6 @@ dependencies = [
  "ndarray 0.16.1",
  "ndarray-npy",
  "ndarray-stats",
- "num_cpus",
  "rayon",
  "serde",
  "serde_json",

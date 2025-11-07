@@ -14,7 +14,7 @@ pub fn compute_match_log_prob(q_seq: &str, quality_score_vec: &[u8], aligned_ref
     let mut match_log_likelihood = 0_f32;
     for (read_char,reference_char,quality_score) in izip!(q_seq.chars(), aligned_ref_seq.chars(), quality_score_vec){
         match read_char==reference_char{
-            true => match_log_likelihood += (1_f32-error_prob(quality_score.clone())).log10(),
+            true => match_log_likelihood += ((1_f32/3_f32)*(1_f32-error_prob(quality_score.clone()))).log10(),
             false => match_log_likelihood += (error_prob(quality_score.clone())).log10(),
         }
     }

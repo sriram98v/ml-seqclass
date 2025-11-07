@@ -8,6 +8,8 @@ use itertools::Itertools;
 use ndarray::Array2;
 use ndarray::prelude::*;
 use utils::*;
+use std::collections::HashSet;
+use std::thread;
 use std::{collections::HashMap, fs::File, io::{BufReader, Write}, sync::Mutex};
 use bio::io::fastq;
 use indicatif::ProgressStyle;
@@ -21,6 +23,7 @@ use flate2::read::GzDecoder;
 use ndarray_stats::QuantileExt;
 use chrono::Local;
 
+/// returns all kmers present in a read.
 fn kmer_vec_for_record(record: &fastq::Record, percent_mismatch: &f32)->Result<Vec<String>>{
     let seq_len = record.seq().len();
     let kmer_size = kmer_length(seq_len, *percent_mismatch);
@@ -41,6 +44,47 @@ fn match_read_kmers(suffarr: &mut SuffixArray, record: &fastq::Record, percent_m
     suffarr.extract(opts)
 }
 
+/// Filters the matches found for different kmers and removes repeated alignments.
+fn clean_kmer_matches(matches: Vec<ExtractResult>)->Vec<ExtractResult>{
+    let mut match_positions: HashMap<String, HashSet<usize>> = HashMap::new();
+
+    matches.into_iter().map(|hit| {
+        let kmer_start_read = hit.query_num;
+        // let query = hit.query;
+        // dbg!(hit.sequences.len());
+        let new_sequences = hit.sequences.into_iter()
+            .filter(|ref_entry| {
+                let seq_name = ref_entry.sequence_name.clone();
+                let kmer_start_ref = ref_entry.suffix_offset;
+
+                // if the read alignment starts within the reference and ends within the reference
+                if kmer_start_ref>=kmer_start_read{
+                    // start position of alignment in reference for read
+                    let align_start = kmer_start_ref-kmer_start_read;
+                    if match_positions.contains_key(&seq_name){
+                        if match_positions[&seq_name].contains(&align_start){
+                            // dbg!(&seq_name, &align_start);
+                            return false;
+                        }
+                        else{
+                            match_positions.entry(seq_name).and_modify(|align_pos| {align_pos.insert(align_start);});
+                            return true;
+                        }
+                    }
+                    else{
+                        match_positions.insert(seq_name, HashSet::new());
+                        return true;
+                    }
+                }
+                else{
+                    return false;
+                }
+            }).collect_vec();
+            // dbg!(&new_sequences);
+        return ExtractResult { query_num: hit.query_num, query: hit.query, sequences: new_sequences }
+    }).collect_vec()
+}
+
 /// Aligns a single read to each of the references
 /// Returns a pair of Hashmaps. The first maps the read to its best alignment to each reference (reference_name, (alignment_start_pos, likelihood of alignment)).
 /// The second returns the sum of likelihoods of all alignments to each reference.(reference_name, (sum of likelihood of all alignments)). 
@@ -57,7 +101,9 @@ fn query_read(suffarr: &mut SuffixArray, refs: &HashMap<String, String>, record:
 
     let matches = match_read_kmers(suffarr, record, percent_mismatch)?;
 
-    matches.par_iter().for_each(|hit| {
+    let cleaned_matches = clean_kmer_matches(matches);
+
+    cleaned_matches.par_iter().for_each(|hit| {
         let kmer_start_read = hit.query_num;
         
         for ref_entry in hit.sequences.iter(){
@@ -160,8 +206,13 @@ fn process_fastq_file(suffarr: &mut SuffixArray,
     Ok(out_aligns)
 }
 
+fn proportions_penalty(props: &Array1<f32>, gamma: f32)->f32{
+    let new_props = 1_f32 + props/gamma;
+    new_props.sum().ln()
+}
+
 #[allow(unused_assignments)]
-fn get_proportions(ll_array: &Array2<f32>, num_iter: usize)->Vec<(usize, usize)>{
+fn get_proportions(ll_array: &Array2<f32>, num_iter: usize)->(Vec<(usize, usize)>, Vec<f32>){
     let num_reads = ll_array.shape()[0];
     let num_srcs = ll_array.shape()[1];
 
@@ -181,6 +232,10 @@ fn get_proportions(ll_array: &Array2<f32>, num_iter: usize)->Vec<(usize, usize)>
 
         w = w/clik;
         w.mapv_inplace(|x| if x.is_nan() { 0. } else { x });
+
+        let penalty = proportions_penalty(&props.slice(s![i, ..num_srcs]).into_owned(), 1.1);
+
+        w = w - penalty;
 
         props.slice_mut(s![i+1, ..num_srcs]).assign(w.mean_axis(Axis(0)).as_ref().unwrap());
 
@@ -212,7 +267,11 @@ fn get_proportions(ll_array: &Array2<f32>, num_iter: usize)->Vec<(usize, usize)>
 
     pb.finish_with_message("");
 
-    results
+    let mut em_props = Array::<f32, _>::zeros((num_srcs).f());
+
+    em_props.assign(&props.slice(s![num_iter, ..]));
+
+    (results, em_props.to_vec())
 }
 
 
@@ -367,12 +426,9 @@ fn main() -> Result<()>{
 
 
             let num_threads = match sub_m.get_one::<usize>("threads").expect("required"){
-                0 => num_cpus::get(),
+                0 => thread::available_parallelism()?.get(),
                 _ => *sub_m.get_one::<usize>("threads").expect("required"),
             };
-
-
-
 
             let log_str = format!("Timestamp: {}\nReads File: {}\nReference Index: {}\nNum Threads: {}\nPercent Mismatch: {}\nEM Iterations: {}\nOutput File: {}",
                 Local::now().format("%Y-%m-%d %H:%M:%S").to_string(),
@@ -411,7 +467,6 @@ fn main() -> Result<()>{
                 read_ids_rev.insert(result.0, record_id);
             }
 
-
             let mut suffarr: SuffixArray = SuffixArray::read(ref_file, false)?;
 
             let refs = get_refs_from_sa(&mut suffarr)?;
@@ -422,19 +477,21 @@ fn main() -> Result<()>{
                 ref_ids.insert(result.to_string(), idx);
                 ref_ids_rev.insert(idx,result.to_string());
             }
+            let contaminant_source_idx = ref_ids.len();
+            ref_ids.insert("Contaminant Source".to_string(), contaminant_source_idx);
+            ref_ids_rev.insert(contaminant_source_idx,"Contaminant Source".to_string());
 
             let mut ll_array: Mutex<ArrayBase<ndarray::OwnedRepr<f32>, Dim<[usize; 2]>>> = Mutex::new(Array2::<f32>::zeros((read_ids.len(), ref_ids.len())));
             ll_array.lock().unwrap().fill(f32::MIN);
 
             let out_alignments = process_fastq_file(&mut suffarr, &refs, Path::new(reads_file), percent_mismatch, &ref_ids, &read_ids, &mut ll_array)?;
 
-            let props = get_proportions(&ll_array.lock().unwrap().exp(), *num_iter);
+            let (read_assignments, _props) = get_proportions(&ll_array.lock().unwrap().exp(), *num_iter);
 
-
-            let pb = ProgressBar::new(props.len() as u64);
+            let pb = ProgressBar::new(read_assignments.len() as u64);
             pb.set_style(ProgressStyle::with_template("Writing output: {spinner:.green} [{elapsed_precise}] [{wide_bar:.cyan/blue}] {percent}% ({eta})").unwrap());
 
-            for (read_id, ref_id) in props.into_iter(){
+            for (read_id, ref_id) in read_assignments.into_iter(){
                     if out_alignments.get(&(read_id, ref_id)).is_some() && ll_array.lock().unwrap()[[read_id, ref_id]].is_finite(){
                         let outstr = format!("{}\t{}\t{}\t{:.5}\n", 
                         read_ids_rev.get(&read_id).unwrap(), 
