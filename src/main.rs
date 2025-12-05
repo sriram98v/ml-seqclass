@@ -212,7 +212,7 @@ fn proportions_penalty(props: &Array1<f32>, gamma: f32)->f32{
 }
 
 #[allow(unused_assignments)]
-fn get_proportions(ll_array: &Array2<f32>, num_iter: usize)->(Vec<(usize, usize)>, Vec<f32>){
+fn get_proportions(ll_array: &Array2<f32>, num_iter: usize, penalty_weight: f32, penalty_gamma: f32)->(Vec<(usize, usize)>, Vec<f32>){
     let num_reads = ll_array.shape()[0];
     let num_srcs = ll_array.shape()[1];
 
@@ -233,9 +233,9 @@ fn get_proportions(ll_array: &Array2<f32>, num_iter: usize)->(Vec<(usize, usize)
         w = w/clik;
         w.mapv_inplace(|x| if x.is_nan() { 0. } else { x });
 
-        // let penalty = proportions_penalty(&props.slice(s![i, ..num_srcs]).into_owned(), 1.1);
+        let penalty = proportions_penalty(&props.slice(s![i, ..num_srcs]).into_owned(), penalty_gamma);
 
-        // w = w - penalty;
+        w = w - penalty_weight*penalty;
 
         props.slice_mut(s![i+1, ..num_srcs]).assign(w.mean_axis(Axis(0)).as_ref().unwrap());
 
@@ -327,6 +327,14 @@ fn main() -> Result<()>{
                     .default_value("100")
                     .value_parser(clap::value_parser!(usize))
                     )
+                .arg(arg!(-g --gamma <GAMMA>"penalty weight")
+                    .default_value("1")
+                    .value_parser(clap::value_parser!(f32))
+                    )
+                .arg(arg!(-l --lambda <LAMBDA>"penalty weight") 
+                    .default_value("0")
+                    .value_parser(clap::value_parser!(f32))
+                    )
                 .arg(arg!(-o --out <OUT_FILE>"Output file")
                     .default_value("out.matches")
                     .value_parser(clap::value_parser!(String))
@@ -415,6 +423,8 @@ fn main() -> Result<()>{
             let reads_file = sub_m.get_one::<String>("reads").expect("required").as_str();
             let num_iter = sub_m.get_one::<usize>("iter").expect("required");
             let percent_mismatch = sub_m.get_one::<f32>("percent_mismatch").expect("required");
+            let gamma = sub_m.get_one::<f32>("gamma").expect("required");
+            let lambda = sub_m.get_one::<f32>("lambda").expect("required");
             let outfile = sub_m.get_one::<String>("out").unwrap().as_str();
 
             let outpath = Some(Mutex::new(File::create(outfile).unwrap()));
@@ -486,7 +496,7 @@ fn main() -> Result<()>{
 
             let out_alignments = process_fastq_file(&mut suffarr, &refs, Path::new(reads_file), percent_mismatch, &ref_ids, &read_ids, &mut ll_array)?;
 
-            let (read_assignments, _props) = get_proportions(&ll_array.lock().unwrap().exp(), *num_iter);
+            let (read_assignments, _props) = get_proportions(&ll_array.lock().unwrap().exp(), *num_iter, *lambda, *gamma);
 
             let pb = ProgressBar::new(read_assignments.len() as u64);
             pb.set_style(ProgressStyle::with_template("Writing output: {spinner:.green} [{elapsed_precise}] [{wide_bar:.cyan/blue}] {percent}% ({eta})").unwrap());
